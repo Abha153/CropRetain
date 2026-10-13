@@ -1,0 +1,35 @@
+# --- Secrets: never commit real environment files (placeholders live in *.example) ---
+.env
+.env.*
+!.env.example
+
+# --- Python ---
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# --- Node / frontend build output ---
+node_modules/
+dist/
+
+# --- Archives and local databases ---
+*.zip
+*.db
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# NOTE: backend/models/price_forecast/ (trained ML artifacts) is intentionally NOT
+# ignored. See docs/ML_PRICE_FORECAST.md: commit them if the deployed server should
+# serve /forecast/ml. If the files are large or private, add narrow rules for the
+# specific artifact files (e.g. backend/models/price_forecast/*.joblib) instead.
+
+# Environment files: never commit real local settings
+**/.env
+**/.env.*
+!**/.env.example

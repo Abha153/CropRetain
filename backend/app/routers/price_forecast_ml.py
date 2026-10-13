@@ -1,0 +1,131 @@
+"""
+ML price forecast endpoints -- separate from the existing /forecast route
+(statistical trend model) and from /market/*. Nothing here trains a model;
+it loads artifacts produced by scripts/train_price_forecast.py.
+
+  GET /forecast/ml/status    artifact + metric summary
+  GET /forecast/ml           7-day-ahead forecast for one crop/market
+  GET /forecast/ml/compare   existing /market/compare result + forecast per market
+
+HONESTY: history comes ONLY from genuine live snapshots in market_prices
+(data_source="live"), exactly like the existing /forecast. Too little or stale
+history -> available:false with a reason, never a guess. `include_snapshot=true`
+explicitly replays the tail of the TRAINING dataset (flagged is_historical_replay).
+"""
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+
+from app.database import get_db
+from app.mock_data.crops import CROP_BY_NAME
+from app.routers import market as market_router
+from app.services.transport_optimizer import net_profit_breakdown
+
+router = APIRouter(prefix="/forecast/ml", tags=["forecast-ml"])
+
+
+def _service():
+    """Lazy import so the API still boots if the optional ML deps are absent."""
+    try:
+        from app.services.price_forecast import inference
+        return inference
+    except ImportError:
+        return None
+
+
+def _unavailable(crop, market, code, message):
+    return {"crop": crop, "market": market, "available": False, "reason": code, "message": message}
+
+
+def _live_history(db, crop, market):
+    rows = market_router._history_rows(db, crop, market, data_source="live")
+    # market_prices.modal_price is INR/quintal (market.py divides by 100 for INR/kg)
+    return [{"date": r.date, "modal_price": r.modal_price} for r in rows]
+
+
+def _forecast_one(inf, db, crop, market, include_snapshot=False):
+    try:
+        arts = inf.load_artifacts()
+        history, source, replay = _live_history(db, crop, market), "live_db", False
+        try:
+            fc = inf.predict(history, crop, market, artifacts=arts)
+        except inf.ForecastError as e:
+            if include_snapshot and e.code in ("insufficient_history", "stale_history"):
+                snap = inf.load_snapshot_history(arts, crop, market)
+                if not snap:
+                    raise
+                source, replay = "training_snapshot", True
+                fc = inf.predict(snap, crop, market, artifacts=arts, allow_stale=True)
+            else:
+                raise
+    except inf.ForecastError as e:
+        return _unavailable(crop, market, e.code, e.message)
+    t = arts.meta["metrics"]["test"]
+    return {
+        "crop": crop, "market": market, "available": True,
+        "history_source": source, "is_historical_replay": replay,
+        "forecast": fc,
+        "model": {
+            "type": "HistGradientBoosting on log price-ratio (scikit-learn); is_machine_learning=true",
+            "dataset": arts.meta["dataset"], "trained_utc": arts.meta["created_utc"],
+            "test_mae_inr_per_quintal": round(t["model"]["mae"], 2),
+            "test_rmse_inr_per_quintal": round(t["model"]["rmse"], 2),
+            "persistence_baseline_test_mae": round(t["baseline_persistence"]["mae"], 2),
+            "evaluated_on": "chronological held-out test split, all markets (not this market alone)",
+        },
+    }
+
+
+@router.get("/status")
+def ml_status():
+    inf = _service()
+    if inf is None:
+        return {"available": False, "reason": "ml_dependencies_missing",
+                "message": "pip install -r requirements-ml.txt"}
+    try:
+        m = inf.load_artifacts().meta
+    except inf.ForecastError as e:
+        return {"available": False, "reason": e.code, "message": e.message}
+    return {"available": True, "horizon_days": m["horizon_days"], "unit": m["unit"],
+            "crops": sorted(m["commodity_idx"]), "known_markets": m["known_markets"],
+            "dataset": m["dataset"], "data_date_range": m["data_date_range"],
+            "split": m["split"], "metrics": m["metrics"], "created_utc": m["created_utc"]}
+
+
+@router.get("")
+def ml_forecast(crop: str, market: str, include_snapshot: bool = False, db: Session = Depends(get_db)):
+    if crop not in CROP_BY_NAME:
+        raise HTTPException(status_code=404, detail="Unknown crop")
+    inf = _service()
+    if inf is None:
+        return _unavailable(crop, market, "ml_dependencies_missing", "pip install -r requirements-ml.txt")
+    return _forecast_one(inf, db, crop, market, include_snapshot)
+
+
+@router.get("/compare")
+def ml_compare(crop: str = Query(...), quantity_kg: float = Query(...), location: str = Query(...),
+               top_n: int = Query(6, ge=1, le=30), include_snapshot: bool = False,
+               db: Session = Depends(get_db)):
+    """Reuses the existing market-comparison logic unchanged, then adds a forecast
+    (and forecast-based net return via the same net_profit_breakdown) per market."""
+    result = market_router._compare_markets_core(crop, quantity_kg, location, top_n, db)
+    inf = _service()
+    options = []
+    for o in result.get("options", []):
+        fc = (_forecast_one(inf, db, crop, o["market"], include_snapshot) if inf else
+              _unavailable(crop, o["market"], "ml_dependencies_missing", "pip install -r requirements-ml.txt"))
+        entry = {**o, "ml_forecast": fc}
+        if fc["available"]:
+            per_kg = fc["forecast"]["predicted_price_per_kg"]
+            entry["forecast_net_profit"] = net_profit_breakdown(quantity_kg, per_kg, o["distance_km"])["net_profit"]
+        options.append(entry)
+    ranked = sorted((o for o in options if "forecast_net_profit" in o),
+                    key=lambda o: o["forecast_net_profit"], reverse=True)
+    return {
+        **result, "options": options,
+        "forecast_horizon_days": 7,
+        "forecast_ranking": [{"market": o["market"], "forecast_net_profit": o["forecast_net_profit"]} for o in ranked],
+        "forecast_recommended_market": ranked[0]["market"] if ranked else None,
+        "forecast_coverage": f"{len(ranked)} of {len(options)} markets",
+        "note": "Existing fields (recommended_market, net_profit, ...) are unchanged and based on today's price; "
+                "forecast_* fields are separate and only cover markets with enough live history.",
+    }

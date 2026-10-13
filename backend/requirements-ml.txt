@@ -1,0 +1,8 @@
+# Optional: only needed for the ML price forecast (/forecast/ml/*) and its training script.
+# The core API (requirements.txt) boots without these; /forecast/ml reports ml_dependencies_missing.
+numpy>=1.26
+pandas>=2.1
+scikit-learn>=1.3
+joblib>=1.3
+pyarrow>=14
+kagglehub>=0.3

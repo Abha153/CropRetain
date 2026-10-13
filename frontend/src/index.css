@@ -1,0 +1,295 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --app-bg: #f5f6fb;
+  --card-bg: #ffffff;
+  --surface: #ffffff;
+  --surface-elevated: #ffffff;
+  --surface-muted: #eef0fa;
+  --input-bg: #ffffff;
+  --text-primary: #1b2140;
+  --text-secondary: rgba(27, 33, 64, 0.64);
+  --text-muted: rgba(27, 33, 64, 0.45);
+  --panel-border: rgba(27, 33, 90, 0.09);
+  --control-border: rgba(27, 33, 90, 0.16);
+  --theme-shadow: 0 10px 30px rgba(27, 33, 90, 0.08);
+  --forest: #27358a;
+  --forest-soft: #e6eafb;
+  --forest-deep: #161e57;
+  --gold: #eba91b;
+  --turmeric: #eba91b;
+  --gain: #1f8a5b;
+  --loss: #c4432b;
+  --text: #1b2140;
+  --sidebar-bg: #161e57;
+  --sidebar-text: #f1f3ff;
+}
+
+.dark {
+  color-scheme: dark;
+  --app-bg: #0d1126;
+  --card-bg: #151b3a;
+  --surface: #151b3a;
+  --surface-elevated: #1c2347;
+  --surface-muted: #1f2850;
+  --input-bg: #121733;
+  --text-primary: #eef0fb;
+  --text-secondary: rgba(238, 240, 251, 0.72);
+  --text-muted: rgba(238, 240, 251, 0.5);
+  --panel-border: rgba(220, 226, 255, 0.12);
+  --control-border: rgba(220, 226, 255, 0.2);
+  --theme-shadow: 0 14px 34px rgba(0, 0, 0, 0.32);
+  --forest: #34429f;
+  --forest-soft: #1f2850;
+  --forest-deep: #0f1540;
+  --gain: #3fbf8a;
+  --loss: #ef7b63;
+  --sidebar-bg: #080b1e;
+  --sidebar-text: #eef0fb;
+}
+
+html, body {
+  background-color: var(--app-bg);
+  font-family: 'Hanken Grotesk', 'Noto Sans', sans-serif;
+  color: var(--text-primary);
+  overflow-x: hidden;
+  width: 100%;
+  transition: background-color 180ms ease, color 180ms ease;
+}
+
+body {
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100vh;
+  background: var(--app-bg);
+  transition: background-color 180ms ease, color 180ms ease;
+}
+
+* {
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #EBA91B;
+  outline-offset: 2px;
+}
+
+h1, h2, h3, h4, .font-display {
+  font-family: 'Bricolage Grotesque', 'Noto Sans', sans-serif;
+  letter-spacing: -0.015em;
+}
+
+.font-mono-data {
+  /* numbers/data: same family as body, tabular figures so columns align */
+  font-family: 'Hanken Grotesk', 'Noto Sans', sans-serif;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: rgba(39, 53, 138, 0.28); border-radius: 999px; }
+
+.ticker-track {
+  animation: ticker-scroll 28s linear infinite;
+}
+@keyframes ticker-scroll {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+.dashboard-shell {
+  background: var(--app-bg);
+}
+
+.dashboard-card {
+  background: var(--card-bg);
+  border: 1px solid var(--panel-border);
+  box-shadow: var(--theme-shadow);
+}
+
+.metric-pill {
+  border: 1px solid rgba(39, 53, 138, 0.1);
+  background: rgba(39, 53, 138, 0.05);
+}
+
+.soft-green {
+  background: linear-gradient(180deg, rgba(39, 53, 138, 0.96), rgba(39, 53, 138, 0.88));
+}
+
+.farm-pattern {
+  background-image: linear-gradient(rgba(255,255,255,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.06) 1px, transparent 1px);
+  background-size: 18px 18px;
+}
+
+/* Shared theme bridge for existing Tailwind surfaces. This keeps the
+   existing page APIs and class names intact while making the root theme
+   tokens authoritative across older screens that predate dark mode. */
+.dark .dashboard-shell,
+.dark main,
+.dark .min-h-screen {
+  background-color: var(--app-bg) !important;
+  color: var(--text-primary);
+}
+
+.dark .bg-white,
+.dark .bg-paper,
+.dark [class~="bg-white/95"] {
+  background-color: var(--surface) !important;
+}
+
+.dark [class~="bg-white/5"],
+.dark [class~="bg-white/10"],
+.dark [class~="bg-white/15"] {
+  background-color: rgba(255, 255, 255, 0.06) !important;
+}
+
+.dark .bg-wheat,
+.dark [class*="bg-wheat/"] {
+  background-color: var(--surface-muted) !important;
+}
+
+.dark [class*="border-black/"],
+.dark [class*="border-forest/"] {
+  border-color: var(--panel-border) !important;
+}
+
+.dark .text-ink,
+.dark [class~="text-ink/70"],
+.dark [class~="text-ink/60"] {
+  color: var(--text-primary) !important;
+}
+
+.dark [class~="text-ink/50"],
+.dark [class~="text-ink/40"],
+.dark [class~="text-ink/35"] {
+  color: var(--text-muted) !important;
+}
+
+.dark input,
+.dark select,
+.dark textarea {
+  color: var(--text-primary) !important;
+  background-color: var(--input-bg) !important;
+  border-color: var(--control-border) !important;
+}
+
+.dark select option {
+  color: var(--text-primary);
+  background-color: var(--surface-elevated);
+}
+
+.dark aside {
+  background-color: var(--sidebar-bg) !important;
+  color: var(--sidebar-text);
+}
+
+.dark header {
+  background-color: rgba(13, 17, 38, 0.9) !important;
+  border-color: var(--panel-border) !important;
+}
+
+.dark .shadow-card,
+.dark .shadow-soft {
+  box-shadow: var(--theme-shadow) !important;
+}
+
+.dark .recharts-cartesian-grid line {
+  stroke: rgba(238, 240, 251, 0.14) !important;
+}
+
+.dark .recharts-text {
+  fill: rgba(238, 240, 251, 0.68) !important;
+}
+
+.dark .recharts-default-tooltip {
+  background-color: var(--surface-elevated) !important;
+  border-color: var(--control-border) !important;
+  color: var(--text-primary) !important;
+}
+
+.dark .text-gain { color: var(--gain) !important; }
+.dark .text-loss { color: var(--loss) !important; }
+
+.dark .bg-marigold.text-ink,
+.dark .bg-amber-400.text-ink {
+  color: #1b2140 !important;
+}
+
+/* ---- Design-system extension (redesign pass) ----
+   Additive utility classes only -- nothing above this line changed, so
+   every page using the pre-existing classes keeps rendering exactly as
+   before. These exist to give flagship surfaces (dashboard hero, landing
+   hero) a premium, editorial feel without pulling in stock photography:
+   a quiet grain texture + a controlled forest gradient, both driven by
+   the theme tokens above so they adapt automatically in dark mode. */
+.premium-hero {
+  background: linear-gradient(135deg, var(--forest) 0%, var(--forest-deep) 62%, #0c1236 100%);
+  position: relative;
+  isolation: isolate;
+}
+
+.premium-hero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  opacity: 0.5;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+  background-size: 14px 14px;
+  pointer-events: none;
+}
+
+.premium-surface {
+  background: var(--surface);
+  border: 1px solid var(--panel-border);
+}
+
+.text-balance {
+  text-wrap: balance;
+}
+
+.advisor-input {
+  width: 100%;
+  border: 1px solid var(--control-border);
+  border-radius: 0.75rem;
+  padding: 0.7rem 0.8rem;
+  background: var(--input-bg);
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.advisor-input:focus {
+  border-color: #eba91b;
+  box-shadow: 0 0 0 3px rgba(235, 169, 27, 0.22);
+  outline: none;
+}
+
+.advisor-action {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 2.8rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 0.7rem;
+  color: #f1f3ff;
+  font-size: 0.8rem;
+  font-weight: 600;
+  transition: background-color 160ms ease, transform 160ms ease;
+}
+
+.advisor-action:hover {
+  background: rgba(255, 255, 255, 0.1);
+  transform: translateY(-1px);
+}
