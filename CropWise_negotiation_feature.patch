@@ -1,0 +1,1417 @@
+diff --git a/README.md b/README.md
+index 60a7e72..ff1ae04 100644
+--- a/README.md
++++ b/README.md
+@@ -203,6 +203,8 @@ A trained model (Prophet/XGBoost/LSTM for forecasting, a CNN for quality grading
+ 
+ Real, server-validated CRUD: listings/lots, buyer offers, accept/reject with duplicate-action prevention, quantity/price validation against the listing's minimums. Buyer verification is a real submit → admin review → approve/reject workflow with an audit log, not a badge you can self-assign.
+ 
++**Negotiation workflow** (`/negotiations`): Offer → Counteroffer → Accept / Reject → Agreement → Transaction record. Each round stores the full terms (price, quantity, quality grade/notes, pickup mode and date, delivery location and deadline) and who proposed it; only the party an open proposal was made *to* can counter, accept or reject it, and the proposer can withdraw it (max 12 rounds). Accepting writes an immutable agreement snapshot with a SHA-256 fingerprint of the agreed terms in the same database transaction as the `Transaction`, plus an `AGREEMENT_RECORDED` timeline event. Offers created before this feature get their round history created lazily; nothing needs migrating. It records what both parties agreed — it does not enforce delivery or payment.
++
+ ## Transport / Net Realization
+ 
+ Transport cost is modelled per trip: vehicle-class selection (mini pickup / LCV / medium truck), diesel price, driver cost, maintenance, vehicle overhead, tolls beyond a free radius, an empty return leg, and a minimum-trip floor — all labelled as tunable reference assumptions, not official tariffs. This is the *same* calculator used everywhere a transport figure appears (market comparison, buyer matching, AgriAdvisor, profit calculator, FarmPool, admin impact dashboard) — there is no second copy of this logic anywhere in the codebase.
+diff --git a/backend/app/main.py b/backend/app/main.py
+index 64d725f..7ddf013 100644
+--- a/backend/app/main.py
++++ b/backend/app/main.py
+@@ -15,7 +15,7 @@ from app.routers import lots, buyer_demands, buyer_verification
+ from app.routers import transactions, payments, grievances, receipts
+ from app.routers import storage, transport, ratings, trip_reviews
+ from app.routers import weather
+-from app.routers import transporters, transport_negotiation
++from app.routers import transporters, transport_negotiation, negotiations
+ 
+ Base.metadata.create_all(bind=engine)
+ run_lightweight_migrations()
+@@ -101,6 +101,7 @@ app.include_router(farmers.router)
+ app.include_router(buyers.router)
+ app.include_router(listings.router)
+ app.include_router(offers.router)
++app.include_router(negotiations.router)
+ app.include_router(market.router)
+ app.include_router(advisor.router)
+ app.include_router(forecast.router)
+diff --git a/backend/app/models.py b/backend/app/models.py
+index 4437a89..16a2cf2 100644
+--- a/backend/app/models.py
++++ b/backend/app/models.py
+@@ -763,3 +763,53 @@ class TripReview(Base):
+             name="uq_trip_review_per_farmer_type",
+         ),
+     )
++
++
++class NegotiationRound(Base):
++    """One proposal in an offer's negotiation history.
++
++    Round 1 is the buyer's original offer. Each counteroffer adds a new
++    round proposed by the other party. The terms on a round are complete
++    (not a diff), so any single row shows exactly what was on the table.
++    status: PROPOSED (awaiting the other party) / COUNTERED / ACCEPTED /
++    REJECTED / WITHDRAWN. At most one round per offer is PROPOSED.
++    """
++    __tablename__ = "negotiation_rounds"
++    __table_args__ = (UniqueConstraint("offer_id", "round_no", name="uq_negotiation_round_no"),)
++
++    id = Column(Integer, primary_key=True, index=True)
++    offer_id = Column(Integer, ForeignKey("buyer_offers.id"), nullable=False, index=True)
++    round_no = Column(Integer, nullable=False)
++    proposed_by = Column(String, nullable=False)        # "buyer" / "farmer"
++    proposed_by_id = Column(Integer, nullable=True)
++    price_per_kg = Column(Float, nullable=False)
++    quantity_kg = Column(Float, nullable=False)
++    quality_grade = Column(String, nullable=True)       # A / B / C
++    quality_notes = Column(Text, nullable=True)
++    pickup_mode = Column(String, nullable=True)         # BUYER_PICKUP / FARMER_DELIVERY / TO_BE_AGREED
++    pickup_date = Column(String, nullable=True)         # ISO date
++    delivery_location = Column(String, nullable=True)
++    delivery_deadline = Column(String, nullable=True)   # ISO date
++    message = Column(Text, nullable=True)
++    status = Column(String, default="PROPOSED", nullable=False)
++    created_at = Column(DateTime, default=now)
++    responded_at = Column(DateTime, nullable=True)
++    responded_by = Column(String, nullable=True)        # who accepted/rejected/countered/withdrew
++
++
++class NegotiationAgreement(Base):
++    """Immutable snapshot of the terms both parties accepted. Created in the
++    same database transaction as the Transaction it belongs to."""
++    __tablename__ = "negotiation_agreements"
++
++    id = Column(Integer, primary_key=True, index=True)
++    offer_id = Column(Integer, ForeignKey("buyer_offers.id"), nullable=False, unique=True)
++    transaction_id = Column(Integer, ForeignKey("transactions.id"), nullable=True, unique=True)
++    round_id = Column(Integer, ForeignKey("negotiation_rounds.id"), nullable=False)
++    farmer_id = Column(Integer, ForeignKey("farmers.id"), nullable=False)
++    buyer_id = Column(Integer, ForeignKey("buyers.id"), nullable=False)
++    accepted_by = Column(String, nullable=False)        # "farmer" / "buyer"
++    terms = Column(JSON, nullable=False)                # full terms snapshot
++    terms_hash = Column(String, nullable=False)         # SHA-256 of the canonical terms JSON
++    rounds_count = Column(Integer, nullable=False)
++    agreed_at = Column(DateTime, default=now)
+diff --git a/backend/app/routers/negotiations.py b/backend/app/routers/negotiations.py
+new file mode 100644
+index 0000000..ea10a1c
+--- /dev/null
++++ b/backend/app/routers/negotiations.py
+@@ -0,0 +1,143 @@
++"""
++Negotiation endpoints -- Offer -> Counteroffer -> Accept / Reject -> Agreement
++-> Transaction record. See app/services/negotiation_service.py for the rules.
++
++Both the farmer who owns the lot/listing and the buyer who made the offer
++can use these; anyone else gets 403.
++"""
++from fastapi import APIRouter, Depends, HTTPException
++from sqlalchemy.orm import Session
++
++from app import models, schemas
++from app.auth_utils import get_current_user
++from app.database import get_db
++from app.routers import offers as offers_router
++from app.services import negotiation_service as neg
++
++router = APIRouter(prefix="/negotiations", tags=["negotiations"])
++
++
++def _get_offer(db: Session, offer_id: int) -> models.BuyerOffer:
++    offer = db.query(models.BuyerOffer).filter(models.BuyerOffer.id == offer_id).first()
++    if not offer:
++        raise HTTPException(status_code=404, detail="Offer not found")
++    return offer
++
++
++def _target_summary(db: Session, offer: models.BuyerOffer) -> dict:
++    if offer.listing_id:
++        t = db.query(models.CropListing).filter(models.CropListing.id == offer.listing_id).first()
++        return {"type": "listing", "id": offer.listing_id, "crop": t.crop if t else None,
++                "location": t.location if t else None, "available_kg": t.quantity_kg if t else None,
++                "grade": t.quality_grade if t else None}
++    t = db.query(models.Lot).filter(models.Lot.id == offer.lot_id).first()
++    return {"type": "lot", "id": offer.lot_id, "crop": t.crop if t else None,
++            "location": t.location if t else None, "available_kg": t.quantity_kg if t else None,
++            "grade": t.grade if t else None}
++
++
++def _view(db: Session, offer: models.BuyerOffer, role: str) -> dict:
++    rounds = neg.ensure_rounds(db, offer)
++    db.commit()  # persist round 1 for offers that predate negotiations
++    agreement = (
++        db.query(models.NegotiationAgreement).filter(models.NegotiationAgreement.offer_id == offer.id).first()
++    )
++    open_round = neg.open_round(db, offer) if offer.status == "pending" else None
++    my_turn = role in ("buyer", "farmer") and open_round is not None and open_round.proposed_by != role
++    return {
++        "offer_id": offer.id,
++        "offer_status": offer.status,
++        "buyer_id": offer.buyer_id,
++        "target": _target_summary(db, offer),
++        "viewer_role": role,
++        "awaiting": neg.other_party(open_round.proposed_by) if open_round else None,
++        "can": {
++            "counter": my_turn and len(rounds) < neg.MAX_ROUNDS,
++            "accept": my_turn,
++            "reject": my_turn,
++            "withdraw": role in ("buyer", "farmer") and open_round is not None and open_round.proposed_by == role,
++        },
++        "max_rounds": neg.MAX_ROUNDS,
++        "rounds": [neg.round_out(r) for r in neg.rounds_for(db, offer.id)],
++        "agreement": neg.agreement_out(agreement),
++        "transaction_id": agreement.transaction_id if agreement else None,
++    }
++
++
++@router.get("/offer/{offer_id}")
++def get_negotiation(offer_id: int, current=Depends(get_current_user), db: Session = Depends(get_db)):
++    offer = _get_offer(db, offer_id)
++    role = neg.actor_role(db, offer, current)
++    return _view(db, offer, role)
++
++
++@router.post("/offer/{offer_id}/counter")
++def counter_offer(offer_id: int, payload: schemas.CounterOfferRequest,
++                  current=Depends(get_current_user), db: Session = Depends(get_db)):
++    offer = _get_offer(db, offer_id)
++    role = neg.actor_role(db, offer, current)
++    changes = payload.model_dump(exclude={"message"})
++    new = neg.add_counter(db, offer, role, current["user"].id, changes, payload.message)
++    farmer_id = neg.offer_target(db, offer)[0]
++    neg.notify(db, neg.other_party(role), farmer_id, offer.buyer_id, "New counteroffer",
++               f"The {role} proposed ₹{new.price_per_kg}/kg for {new.quantity_kg} kg. Review and respond.")
++    db.commit()
++    return _view(db, offer, role)
++
++
++@router.post("/offer/{offer_id}/accept")
++def accept_proposal(offer_id: int, current=Depends(get_current_user), db: Session = Depends(get_db)):
++    offer = _get_offer(db, offer_id)
++    role = neg.actor_role(db, offer, current)
++    farmer_id = neg.offer_target(db, offer)[0]
++    farmer = current["user"] if role == "farmer" else (
++        db.query(models.Farmer).filter(models.Farmer.id == farmer_id).first())
++    result = offers_router.accept_offer_core(db, offer, farmer, accepted_by=role)
++    view = _view(db, offer, role)
++    view["transaction_id"] = result["transaction_id"]
++    return view
++
++
++@router.post("/offer/{offer_id}/reject")
++def reject_proposal(offer_id: int, current=Depends(get_current_user), db: Session = Depends(get_db)):
++    offer = _get_offer(db, offer_id)
++    role = neg.actor_role(db, offer, current)
++    offers_router.reject_offer_core(db, offer, role)
++    farmer_id = neg.offer_target(db, offer)[0]
++    neg.notify(db, neg.other_party(role), farmer_id, offer.buyer_id, "Proposal rejected",
++               f"The {role} rejected the latest proposal. The negotiation is closed.", "warning")
++    db.commit()
++    return _view(db, offer, role)
++
++
++@router.post("/offer/{offer_id}/withdraw")
++def withdraw_proposal(offer_id: int, current=Depends(get_current_user), db: Session = Depends(get_db)):
++    offer = _get_offer(db, offer_id)
++    role = neg.actor_role(db, offer, current)
++    open_round = neg.require_open_round(db, offer)
++    if open_round.proposed_by != role:
++        raise HTTPException(status_code=409, detail="You can only withdraw your own open proposal")
++    offers_router.close_offer(db, offer, "withdrawn", role)
++    farmer_id = neg.offer_target(db, offer)[0]
++    neg.notify(db, neg.other_party(role), farmer_id, offer.buyer_id, "Proposal withdrawn",
++               f"The {role} withdrew their proposal. The negotiation is closed.", "info")
++    db.commit()
++    return _view(db, offer, role)
++
++
++@router.get("/transaction/{transaction_id}")
++def negotiation_for_transaction(transaction_id: int, current=Depends(get_current_user),
++                                db: Session = Depends(get_db)):
++    """The agreed terms and full round history behind a transaction."""
++    txn = db.query(models.Transaction).filter(models.Transaction.id == transaction_id).first()
++    if not txn:
++        raise HTTPException(status_code=404, detail="Transaction not found")
++    role, user = current["role"], current["user"]
++    is_party = (role == "farmer" and user.id == txn.farmer_id) or (role == "buyer" and user.id == txn.buyer_id)
++    if not is_party and role != "admin":
++        raise HTTPException(status_code=403, detail="You are not a party to this transaction")
++    if not txn.offer_id:
++        return {"transaction_id": txn.id, "agreement": None, "rounds": []}
++    offer = _get_offer(db, txn.offer_id)
++    view = _view(db, offer, role if is_party else "admin")
++    return {"transaction_id": txn.id, "agreement": view["agreement"], "rounds": view["rounds"]}
+diff --git a/backend/app/routers/offers.py b/backend/app/routers/offers.py
+index 378f763..9079445 100644
+--- a/backend/app/routers/offers.py
++++ b/backend/app/routers/offers.py
+@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
+ from app.database import get_db
+ from app import models, schemas
+ from app.auth_utils import require_buyer, require_farmer
++from app.services import negotiation_service as neg
+ 
+ router = APIRouter(prefix="/offers", tags=["offers"])
+ 
+@@ -78,6 +79,15 @@ def create_offer(payload: schemas.OfferCreate, buyer: models.Buyer = Depends(req
+         lot.status = "UNDER_OFFER"
+ 
+     db.add(offer)
++    db.flush()
++    # Round 1 of the negotiation = this offer, plus any terms the buyer sent.
++    first = neg.ensure_rounds(db, offer)[0]
++    initial = {k: getattr(payload, k) for k in neg.TERM_FIELDS if k not in ("price_per_kg", "quantity_kg")}
++    if any(v is not None for v in initial.values()):
++        _, available, _, _ = neg.offer_target(db, offer)
++        terms = neg.merge_terms(neg.round_terms(first), initial, available)
++        for k, v in terms.items():
++            setattr(first, k, v)
+     db.commit()
+     db.refresh(offer)
+     return offer
+@@ -135,6 +145,16 @@ def accept_offer(offer_id: int, farmer: models.Farmer = Depends(require_farmer),
+         raise HTTPException(status_code=404, detail="Offer not found")
+     if offer.status != "pending":
+         raise HTTPException(status_code=400, detail=f"This offer is already {offer.status} and cannot be changed")
++    return accept_offer_core(db, offer, farmer, accepted_by="farmer")
++
++
++def accept_offer_core(db: Session, offer: models.BuyerOffer, farmer: models.Farmer, accepted_by: str):
++    """Turn the offer's current open proposal into a Transaction + Agreement.
++    `farmer` is the owner of the lot/listing (also used for the ownership
++    checks); `accepted_by` is the party who actually accepted ('farmer'
++    or 'buyer' -- the buyer accepts a farmer's counteroffer)."""
++    # Only the party who did not make the open proposal may accept it.
++    neg.require_turn(neg.require_open_round(db, offer), accepted_by)
+ 
+     if offer.listing_id:
+         listing = db.query(models.CropListing).filter(models.CropListing.id == offer.listing_id).first()
+@@ -192,8 +212,9 @@ def accept_offer(offer_id: int, farmer: models.Farmer = Depends(require_farmer),
+     # reject other pending offers on the same lot/listing
+     for o in others:
+         o.status = "rejected"
+-        if o.lot_id:
+-            pass  # lot already reassigned to SOLD; nothing further to revert
++        losing = neg.open_round(db, o)
++        if losing:
++            neg.close_round(losing, "REJECTED", "system")
+ 
+     transaction = models.Transaction(
+         listing_id=offer.listing_id,
+@@ -214,17 +235,21 @@ def accept_offer(offer_id: int, farmer: models.Farmer = Depends(require_farmer),
+     db.add(models.TransactionEvent(
+         transaction_id=transaction.id,
+         event_type="OFFER_CREATED",
+-        description=f"Offer of ₹{offer.offered_price_per_kg}/kg created by buyer",
++        description="Offer created by buyer",
+         performed_by="buyer",
+         performed_by_id=offer.buyer_id,
+     ))
+     db.add(models.TransactionEvent(
+         transaction_id=transaction.id,
+         event_type="OFFER_ACCEPTED",
+-        description=f"Offer accepted by farmer. Transaction initiated.",
+-        performed_by="farmer",
+-        performed_by_id=farmer.id,
++        description=f"Offer accepted by {accepted_by}. Transaction initiated.",
++        performed_by=accepted_by,
++        performed_by_id=farmer.id if accepted_by == "farmer" else offer.buyer_id,
+     ))
++    neg.record_agreement(db, offer, transaction, accepted_by)
++    neg.notify(db, neg.other_party(accepted_by), farmer.id, offer.buyer_id,
++               "Offer accepted", f"Terms agreed: ₹{offer.offered_price_per_kg}/kg × {offer.quantity_kg} kg. "
++               f"Transaction #{transaction.id} created.", "success")
+     db.commit()
+     return {"accepted": True, "transaction_id": transaction.id}
+ 
+@@ -246,16 +271,36 @@ def reject_offer(offer_id: int, farmer: models.Farmer = Depends(require_farmer),
+         lot = db.query(models.Lot).filter(models.Lot.id == offer.lot_id).first()
+         if not lot or lot.farmer_id != farmer.id:
+             raise HTTPException(status_code=403, detail="You can only reject offers on your own lots")
+-        # If no other pending offers remain on this lot, free it back up.
++
++    reject_offer_core(db, offer, "farmer")
++    neg.notify(db, "buyer", farmer.id, offer.buyer_id, "Offer rejected",
++               f"The farmer rejected the proposal of ₹{offer.offered_price_per_kg}/kg for {offer.quantity_kg} kg.",
++               "warning")
++    db.commit()
++    return {"rejected": True}
++
++
++def reject_offer_core(db: Session, offer: models.BuyerOffer, role: str):
++    """Reject the open proposal (by the party it was proposed TO)."""
++    neg.require_turn(neg.require_open_round(db, offer), role)
++    close_offer(db, offer, "rejected", role)
++
++
++def close_offer(db: Session, offer: models.BuyerOffer, new_status: str, role: str):
++    """End a negotiation without a deal ('rejected' or 'withdrawn'): update the
++    offer, close its open round, and free the lot if nothing else is pending."""
++    neg.ensure_rounds(db, offer)
++    if offer.lot_id:
++        lot = db.query(models.Lot).filter(models.Lot.id == offer.lot_id).first()
+         remaining = (
+             db.query(models.BuyerOffer)
+-            .filter(models.BuyerOffer.lot_id == lot.id, models.BuyerOffer.id != offer.id,
++            .filter(models.BuyerOffer.lot_id == offer.lot_id, models.BuyerOffer.id != offer.id,
+                     models.BuyerOffer.status == "pending")
+             .count()
+         )
+-        if remaining == 0 and lot.status == "UNDER_OFFER":
++        if lot and remaining == 0 and lot.status == "UNDER_OFFER":
+             lot.status = "AVAILABLE"
+-
+-    offer.status = "rejected"
+-    db.commit()
+-    return {"rejected": True}
++    offer.status = new_status
++    open_round = neg.open_round(db, offer)
++    if open_round:
++        neg.close_round(open_round, "REJECTED" if new_status == "rejected" else "WITHDRAWN", role)
+diff --git a/backend/app/schemas.py b/backend/app/schemas.py
+index 8861c3c..6769d33 100644
+--- a/backend/app/schemas.py
++++ b/backend/app/schemas.py
+@@ -161,6 +161,27 @@ class OfferCreate(BaseModel):
+     quantity_kg: float
+     message: Optional[str] = ""
+     language: str = "en"
++    # Optional negotiation terms recorded on round 1 (see negotiation_service).
++    quality_grade: Optional[str] = None
++    quality_notes: Optional[str] = None
++    pickup_mode: Optional[str] = None
++    pickup_date: Optional[str] = None
++    delivery_location: Optional[str] = None
++    delivery_deadline: Optional[str] = None
++
++
++class CounterOfferRequest(BaseModel):
++    """Only send the terms you want to change; the rest carry over from the
++    proposal you are responding to."""
++    price_per_kg: Optional[float] = None
++    quantity_kg: Optional[float] = None
++    quality_grade: Optional[str] = None
++    quality_notes: Optional[str] = None
++    pickup_mode: Optional[str] = None
++    pickup_date: Optional[str] = None
++    delivery_location: Optional[str] = None
++    delivery_deadline: Optional[str] = None
++    message: Optional[str] = None
+ 
+ 
+ class OfferOut(BaseModel):
+diff --git a/backend/app/services/negotiation_service.py b/backend/app/services/negotiation_service.py
+new file mode 100644
+index 0000000..af322cd
+--- /dev/null
++++ b/backend/app/services/negotiation_service.py
+@@ -0,0 +1,285 @@
++"""
++Negotiation workflow between a farmer and a buyer, on top of BuyerOffer.
++
++    Offer -> Counteroffer -> Accept / Reject -> Agreement -> Transaction record
++
++* Round 1 is the buyer's original offer. Every counteroffer is a new
++  NegotiationRound proposed by the other party; terms inherit from the
++  previous round unless changed, and every round stores the complete terms.
++* Only the party who did NOT make the open proposal may counter, accept or
++  reject it. The proposer may withdraw it. There is never more than one open
++  (PROPOSED) round per offer.
++* BuyerOffer.offered_price_per_kg / quantity_kg always mirror the CURRENT
++  open proposal, so the existing accept/reject endpoints and every screen
++  that lists offers keep working. The full history lives in the rounds.
++* Accepting creates a NegotiationAgreement (terms snapshot + SHA-256 of the
++  canonical terms) in the same database transaction as the Transaction.
++
++Offers created before this feature have no rounds; ensure_rounds() lazily
++creates round 1 from the offer row, so nothing needs migrating.
++"""
++import datetime as dt
++import hashlib
++import json
++from typing import Dict, Optional
++
++from fastapi import HTTPException
++from sqlalchemy.orm import Session
++
++from app import models
++
++MAX_ROUNDS = 12
++PICKUP_MODES = ("BUYER_PICKUP", "FARMER_DELIVERY", "TO_BE_AGREED")
++QUALITY_GRADES = ("A", "B", "C")
++TERM_FIELDS = (
++    "price_per_kg", "quantity_kg", "quality_grade", "quality_notes",
++    "pickup_mode", "pickup_date", "delivery_location", "delivery_deadline",
++)
++OPEN = "PROPOSED"
++
++
++def _now():
++    return dt.datetime.utcnow()
++
++
++def other_party(role: str) -> str:
++    return "farmer" if role == "buyer" else "buyer"
++
++
++# ---------- who owns what ----------
++
++def offer_target(db: Session, offer: models.BuyerOffer):
++    """(farmer_id, available_quantity_kg, default_quality_grade, location) of the lot/listing."""
++    if offer.listing_id:
++        listing = db.query(models.CropListing).filter(models.CropListing.id == offer.listing_id).first()
++        if listing:
++            return listing.farmer_id, listing.quantity_kg, listing.quality_grade, listing.location
++    elif offer.lot_id:
++        lot = db.query(models.Lot).filter(models.Lot.id == offer.lot_id).first()
++        if lot:
++            return lot.farmer_id, lot.quantity_kg, lot.grade, lot.location
++    raise HTTPException(status_code=404, detail="The lot or listing for this offer no longer exists")
++
++
++def actor_role(db: Session, offer: models.BuyerOffer, current: dict) -> str:
++    """'buyer' or 'farmer' if the signed-in user is a party to this offer, else 403."""
++    role, user = current["role"], current["user"]
++    if role == "buyer" and user.id == offer.buyer_id:
++        return "buyer"
++    if role == "farmer" and user.id == offer_target(db, offer)[0]:
++        return "farmer"
++    raise HTTPException(status_code=403, detail="You are not a party to this negotiation")
++
++
++# ---------- rounds ----------
++
++def round_terms(r: models.NegotiationRound) -> Dict:
++    return {f: getattr(r, f) for f in TERM_FIELDS}
++
++
++def rounds_for(db: Session, offer_id: int):
++    return (
++        db.query(models.NegotiationRound)
++        .filter(models.NegotiationRound.offer_id == offer_id)
++        .order_by(models.NegotiationRound.round_no)
++        .all()
++    )
++
++
++def ensure_rounds(db: Session, offer: models.BuyerOffer):
++    """Create round 1 from the offer row if this offer predates negotiations."""
++    existing = rounds_for(db, offer.id)
++    if existing:
++        return existing
++    _, _, default_grade, _ = offer_target(db, offer)
++    status = {"pending": OPEN, "accepted": "ACCEPTED", "rejected": "REJECTED",
++              "withdrawn": "WITHDRAWN"}.get(offer.status, OPEN)
++    first = models.NegotiationRound(
++        offer_id=offer.id, round_no=1, proposed_by="buyer", proposed_by_id=offer.buyer_id,
++        price_per_kg=offer.offered_price_per_kg, quantity_kg=offer.quantity_kg,
++        quality_grade=default_grade, message=offer.message or None, status=status,
++        created_at=offer.created_at or _now(),
++    )
++    db.add(first)
++    db.flush()
++    return [first]
++
++
++def open_round(db: Session, offer: models.BuyerOffer) -> Optional[models.NegotiationRound]:
++    return (
++        db.query(models.NegotiationRound)
++        .filter(models.NegotiationRound.offer_id == offer.id, models.NegotiationRound.status == OPEN)
++        .order_by(models.NegotiationRound.round_no.desc())
++        .first()
++    )
++
++
++def require_open_round(db: Session, offer: models.BuyerOffer) -> models.NegotiationRound:
++    ensure_rounds(db, offer)
++    if offer.status != "pending":
++        raise HTTPException(status_code=400, detail=f"This negotiation is closed (offer {offer.status})")
++    rnd = open_round(db, offer)
++    if rnd is None:
++        raise HTTPException(status_code=400, detail="There is no open proposal to respond to")
++    return rnd
++
++
++def require_turn(rnd: models.NegotiationRound, role: str):
++    if rnd.proposed_by == role:
++        raise HTTPException(
++            status_code=409,
++            detail="Waiting for the other party: you can't respond to your own proposal (you can withdraw it)",
++        )
++
++
++# ---------- validation ----------
++
++def _clean_text(value: Optional[str], limit: int) -> Optional[str]:
++    if value is None:
++        return None
++    value = value.strip()
++    if len(value) > limit:
++        raise HTTPException(status_code=400, detail=f"Text is too long (max {limit} characters)")
++    return value or None
++
++
++def _check_date(value: Optional[str], label: str) -> Optional[str]:
++    if value in (None, ""):
++        return None
++    try:
++        return dt.date.fromisoformat(value).isoformat()
++    except ValueError:
++        raise HTTPException(status_code=400, detail=f"{label} must be a date in YYYY-MM-DD format")
++
++
++def merge_terms(previous: Dict, changes: Dict, available_qty: float) -> Dict:
++    """Previous round's terms overlaid with the fields the caller actually sent
++    (None = not sent). Validates the result."""
++    terms = dict(previous)
++    for key in TERM_FIELDS:
++        if changes.get(key) is not None:
++            terms[key] = changes[key]
++
++    if terms["price_per_kg"] is None or float(terms["price_per_kg"]) <= 0:
++        raise HTTPException(status_code=400, detail="Price must be greater than zero")
++    if terms["quantity_kg"] is None or float(terms["quantity_kg"]) <= 0:
++        raise HTTPException(status_code=400, detail="Quantity must be greater than zero")
++    terms["price_per_kg"] = round(float(terms["price_per_kg"]), 2)
++    terms["quantity_kg"] = round(float(terms["quantity_kg"]), 2)
++    if terms["quantity_kg"] > available_qty:
++        raise HTTPException(
++            status_code=400,
++            detail=f"Quantity ({terms['quantity_kg']} kg) exceeds the available quantity ({available_qty} kg)",
++        )
++
++    grade = terms.get("quality_grade")
++    if grade is not None:
++        grade = str(grade).upper()
++        if grade not in QUALITY_GRADES:
++            raise HTTPException(status_code=400, detail="Quality grade must be A, B or C")
++    terms["quality_grade"] = grade
++
++    mode = terms.get("pickup_mode")
++    if mode is not None and mode not in PICKUP_MODES:
++        raise HTTPException(status_code=400, detail=f"Pickup mode must be one of {', '.join(PICKUP_MODES)}")
++
++    terms["quality_notes"] = _clean_text(terms.get("quality_notes"), 500)
++    terms["delivery_location"] = _clean_text(terms.get("delivery_location"), 200)
++    terms["pickup_date"] = _check_date(terms.get("pickup_date"), "Pickup date")
++    terms["delivery_deadline"] = _check_date(terms.get("delivery_deadline"), "Delivery deadline")
++    if terms["pickup_date"] and terms["delivery_deadline"] and terms["delivery_deadline"] < terms["pickup_date"]:
++        raise HTTPException(status_code=400, detail="Delivery deadline can't be before the pickup date")
++    return terms
++
++
++# ---------- actions ----------
++
++def add_counter(db: Session, offer: models.BuyerOffer, role: str, actor_id: int,
++                changes: Dict, message: Optional[str]) -> models.NegotiationRound:
++    current = require_open_round(db, offer)
++    require_turn(current, role)
++    rounds = rounds_for(db, offer.id)
++    if len(rounds) >= MAX_ROUNDS:
++        raise HTTPException(status_code=400, detail=f"Negotiation limit reached ({MAX_ROUNDS} rounds). Accept or reject.")
++
++    _, available, _, _ = offer_target(db, offer)
++    terms = merge_terms(round_terms(current), changes, available)
++    if all(terms[f] == getattr(current, f) for f in TERM_FIELDS):
++        raise HTTPException(status_code=400, detail="A counteroffer must change at least one term")
++
++    current.status = "COUNTERED"
++    current.responded_at = _now()
++    current.responded_by = role
++    new = models.NegotiationRound(
++        offer_id=offer.id, round_no=current.round_no + 1, proposed_by=role, proposed_by_id=actor_id,
++        message=_clean_text(message, 500), status=OPEN, **terms,
++    )
++    db.add(new)
++    # Keep the offer row in step with the live proposal (see module docstring).
++    offer.offered_price_per_kg = new.price_per_kg
++    offer.quantity_kg = new.quantity_kg
++    db.flush()
++    return new
++
++
++def close_round(rnd: models.NegotiationRound, status: str, role: str):
++    rnd.status = status
++    rnd.responded_at = _now()
++    rnd.responded_by = role
++
++
++def _canonical_hash(terms: Dict) -> str:
++    return hashlib.sha256(json.dumps(terms, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
++
++
++def record_agreement(db: Session, offer: models.BuyerOffer, transaction: models.Transaction,
++                     accepted_by: str) -> models.NegotiationAgreement:
++    """Mark the open round accepted and write the agreement + a timeline event.
++    Must run in the same db transaction that created `transaction`."""
++    rounds = ensure_rounds(db, offer)
++    rnd = open_round(db, offer) or rounds[-1]
++    close_round(rnd, "ACCEPTED", accepted_by)
++
++    terms = round_terms(rnd)
++    agreement = models.NegotiationAgreement(
++        offer_id=offer.id, transaction_id=transaction.id, round_id=rnd.id,
++        farmer_id=transaction.farmer_id, buyer_id=transaction.buyer_id,
++        accepted_by=accepted_by, terms=terms, terms_hash=_canonical_hash(terms),
++        rounds_count=len(rounds),
++    )
++    db.add(agreement)
++    db.add(models.TransactionEvent(
++        transaction_id=transaction.id, event_type="AGREEMENT_RECORDED",
++        description=(f"Terms agreed after {len(rounds)} round(s): ₹{terms['price_per_kg']}/kg × "
++                     f"{terms['quantity_kg']} kg. Accepted by {accepted_by}."),
++        performed_by=accepted_by,
++        performed_by_id=transaction.farmer_id if accepted_by == "farmer" else transaction.buyer_id,
++        event_metadata={"terms_hash": agreement.terms_hash, "rounds": len(rounds), "offer_id": offer.id},
++    ))
++    return agreement
++
++
++def notify(db: Session, to_role: str, farmer_id: int, buyer_id: int, title: str, message: str,
++           severity: str = "info"):
++    db.add(models.Notification(
++        farmer_id=farmer_id if to_role == "farmer" else None,
++        buyer_id=buyer_id if to_role == "buyer" else None,
++        type="NEGOTIATION", title=title, message=message, severity=severity,
++    ))
++
++
++def round_out(r: models.NegotiationRound) -> Dict:
++    return {
++        "id": r.id, "round_no": r.round_no, "proposed_by": r.proposed_by, "status": r.status,
++        "message": r.message, "created_at": r.created_at, "responded_at": r.responded_at,
++        "responded_by": r.responded_by, **round_terms(r),
++    }
++
++
++def agreement_out(a: Optional[models.NegotiationAgreement]) -> Optional[Dict]:
++    if a is None:
++        return None
++    return {
++        "id": a.id, "offer_id": a.offer_id, "transaction_id": a.transaction_id, "accepted_by": a.accepted_by,
++        "terms": a.terms, "terms_hash": a.terms_hash, "rounds_count": a.rounds_count, "agreed_at": a.agreed_at,
++    }
+diff --git a/backend/tests/test_negotiation.py b/backend/tests/test_negotiation.py
+new file mode 100644
+index 0000000..285344d
+--- /dev/null
++++ b/backend/tests/test_negotiation.py
+@@ -0,0 +1,218 @@
++import os
++import sys
++
++import pytest
++from fastapi import HTTPException
++from sqlalchemy import create_engine
++from sqlalchemy.orm import sessionmaker
++
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
++
++from app import models, schemas
++from app.database import Base
++from app.routers import negotiations as nr
++from app.routers import offers as offers_router
++
++
++@pytest.fixture()
++def db():
++    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
++    Base.metadata.create_all(bind=engine)
++    session = sessionmaker(bind=engine)()
++    yield session
++    session.close()
++
++
++@pytest.fixture()
++def world(db):
++    farmer = models.Farmer(name="F", email="f@example.com", password_hash="x", location="Bilaspur")
++    other_farmer = models.Farmer(name="F2", email="f2@example.com", password_hash="x", location="Durg")
++    buyer = models.Buyer(company_name="B", email="b@example.com", password_hash="x", location="Raipur")
++    other_buyer = models.Buyer(company_name="B2", email="b2@example.com", password_hash="x", location="Raipur")
++    db.add_all([farmer, other_farmer, buyer, other_buyer])
++    db.flush()
++    lot = models.Lot(lot_number="LOT-NEG-1", farmer_id=farmer.id, crop="Tomato", quantity_kg=100,
++                     location="Bilaspur", expected_price=30, grade="B", status="AVAILABLE")
++    db.add(lot)
++    db.commit()
++    return dict(farmer=farmer, other_farmer=other_farmer, buyer=buyer, other_buyer=other_buyer, lot=lot)
++
++
++def as_(role, user):
++    return {"role": role, "user": user}
++
++
++def make_offer(db, w, price=25.0, qty=40.0, **terms):
++    return offers_router.create_offer(
++        schemas.OfferCreate(lot_id=w["lot"].id, offered_price_per_kg=price, quantity_kg=qty, **terms),
++        w["buyer"], db)
++
++
++def counter(db, offer, who, **changes):
++    return nr.counter_offer(offer.id, schemas.CounterOfferRequest(**changes), as_(*who), db)
++
++
++def test_create_offer_starts_round_one_with_terms(db, world):
++    offer = make_offer(db, world, pickup_mode="BUYER_PICKUP", pickup_date="2026-11-01", quality_grade="a")
++    view = nr.get_negotiation(offer.id, as_("buyer", world["buyer"]), db)
++    assert len(view["rounds"]) == 1
++    r = view["rounds"][0]
++    assert (r["proposed_by"], r["status"], r["price_per_kg"], r["quantity_kg"]) == ("buyer", "PROPOSED", 25.0, 40.0)
++    assert r["pickup_mode"] == "BUYER_PICKUP" and r["quality_grade"] == "A"
++    assert view["awaiting"] == "farmer"
++    assert view["can"] == {"counter": False, "accept": False, "reject": False, "withdraw": True}
++
++
++def test_round_one_defaults_quality_from_lot(db, world):
++    offer = make_offer(db, world)
++    assert nr.get_negotiation(offer.id, as_("farmer", world["farmer"]), db)["rounds"][0]["quality_grade"] == "B"
++
++
++def test_full_negotiation_to_agreement_and_transaction(db, world):
++    f, b = ("farmer", world["farmer"]), ("buyer", world["buyer"])
++    offer = make_offer(db, world, price=25, qty=40)
++    counter(db, offer, f, price_per_kg=30, pickup_mode="BUYER_PICKUP", pickup_date="2026-11-02",
++            message="Pickup from my farm")
++    counter(db, offer, b, price_per_kg=28, quantity_kg=50, delivery_deadline="2026-11-05")
++    view = nr.accept_proposal(offer.id, as_(*f), db)
++
++    assert [r["status"] for r in view["rounds"]] == ["COUNTERED", "COUNTERED", "ACCEPTED"]
++    assert [r["proposed_by"] for r in view["rounds"]] == ["buyer", "farmer", "buyer"]
++    txn = db.query(models.Transaction).one()
++    assert (txn.final_price_per_kg, txn.quantity_kg, txn.total_amount) == (28, 50, 1400)
++    assert txn.offer_id == offer.id and view["transaction_id"] == txn.id
++
++    ag = db.query(models.NegotiationAgreement).one()
++    assert ag.accepted_by == "farmer" and ag.rounds_count == 3 and ag.transaction_id == txn.id
++    assert ag.terms["price_per_kg"] == 28 and ag.terms["pickup_mode"] == "BUYER_PICKUP"  # inherited from round 2
++    assert ag.terms["delivery_deadline"] == "2026-11-05" and len(ag.terms_hash) == 64
++    events = [e.event_type for e in txn.events]
++    assert events == ["OFFER_CREATED", "OFFER_ACCEPTED", "AGREEMENT_RECORDED"]
++
++    db.refresh(world["lot"])
++    assert world["lot"].quantity_kg == 50 and world["lot"].status == "AVAILABLE"
++    done = nr.negotiation_for_transaction(txn.id, as_(*b), db)
++    assert done["agreement"]["terms_hash"] == ag.terms_hash and len(done["rounds"]) == 3
++
++
++def test_buyer_can_accept_farmers_counter(db, world):
++    offer = make_offer(db, world, price=25, qty=100)
++    counter(db, offer, ("farmer", world["farmer"]), price_per_kg=31)
++    view = nr.accept_proposal(offer.id, as_("buyer", world["buyer"]), db)
++    txn = db.query(models.Transaction).one()
++    assert txn.final_price_per_kg == 31 and txn.farmer_id == world["farmer"].id
++    assert view["agreement"]["accepted_by"] == "buyer"
++    db.refresh(world["lot"])
++    assert world["lot"].status == "SOLD"
++    assert db.query(models.Notification).filter_by(farmer_id=world["farmer"].id).count() >= 1
++
++
++def test_turn_rules(db, world):
++    offer = make_offer(db, world)
++    with pytest.raises(HTTPException) as e:  # buyer can't counter their own proposal
++        counter(db, offer, ("buyer", world["buyer"]), price_per_kg=26)
++    assert e.value.status_code == 409
++    counter(db, offer, ("farmer", world["farmer"]), price_per_kg=30)
++    with pytest.raises(HTTPException) as e:  # farmer can't accept own counter (legacy endpoint)
++        offers_router.accept_offer(offer.id, world["farmer"], db)
++    assert e.value.status_code == 409
++    with pytest.raises(HTTPException) as e:
++        nr.accept_proposal(offer.id, as_("farmer", world["farmer"]), db)
++    assert e.value.status_code == 409
++    with pytest.raises(HTTPException) as e:  # farmer can't reject own counter either
++        offers_router.reject_offer(offer.id, world["farmer"], db)
++    assert e.value.status_code == 409
++
++
++def test_reject_closes_negotiation_and_frees_lot(db, world):
++    offer = make_offer(db, world)
++    db.refresh(world["lot"])
++    assert world["lot"].status == "UNDER_OFFER"
++    counter(db, offer, ("farmer", world["farmer"]), price_per_kg=30)
++    view = nr.reject_proposal(offer.id, as_("buyer", world["buyer"]), db)
++    assert view["offer_status"] == "rejected" and view["rounds"][-1]["status"] == "REJECTED"
++    assert view["awaiting"] is None and not any(view["can"].values())
++    db.refresh(world["lot"])
++    assert world["lot"].status == "AVAILABLE"
++    with pytest.raises(HTTPException) as e:
++        counter(db, offer, ("farmer", world["farmer"]), price_per_kg=29)
++    assert e.value.status_code == 400
++
++
++def test_withdraw_only_by_proposer(db, world):
++    offer = make_offer(db, world)
++    with pytest.raises(HTTPException) as e:
++        nr.withdraw_proposal(offer.id, as_("farmer", world["farmer"]), db)
++    assert e.value.status_code == 409
++    view = nr.withdraw_proposal(offer.id, as_("buyer", world["buyer"]), db)
++    assert view["offer_status"] == "withdrawn" and view["rounds"][-1]["status"] == "WITHDRAWN"
++    db.refresh(world["lot"])
++    assert world["lot"].status == "AVAILABLE"
++
++
++@pytest.mark.parametrize("changes,code", [
++    ({"quantity_kg": 500}, 400),                       # more than available
++    ({"price_per_kg": 0}, 400),
++    ({"quality_grade": "Z"}, 400),
++    ({"pickup_mode": "TELEPORT"}, 400),
++    ({"pickup_date": "02-11-2026"}, 400),
++    ({"pickup_date": "2026-11-10", "delivery_deadline": "2026-11-01"}, 400),
++    ({"price_per_kg": 25.0}, 400),                     # no change from current proposal
++    ({"quality_notes": "x" * 501}, 400),
++])
++def test_counter_validation(db, world, changes, code):
++    offer = make_offer(db, world, price=25, qty=40)
++    with pytest.raises(HTTPException) as e:
++        counter(db, offer, ("farmer", world["farmer"]), **changes)
++    assert e.value.status_code == code
++    assert len(nr.get_negotiation(offer.id, as_("farmer", world["farmer"]), db)["rounds"]) == 1
++
++
++def test_only_parties_can_see_or_act(db, world):
++    offer = make_offer(db, world)
++    for who in (("farmer", world["other_farmer"]), ("buyer", world["other_buyer"])):
++        with pytest.raises(HTTPException) as e:
++            nr.get_negotiation(offer.id, as_(*who), db)
++        assert e.value.status_code == 403
++    with pytest.raises(HTTPException) as e:
++        nr.get_negotiation(offer.id, as_("transporter", object()), db)
++    assert e.value.status_code == 403
++
++
++def test_legacy_offer_without_rounds_still_works(db, world):
++    legacy = models.BuyerOffer(buyer_id=world["buyer"].id, lot_id=world["lot"].id,
++                               offered_price_per_kg=27, quantity_kg=20, status="pending")
++    db.add(legacy)
++    world["lot"].status = "UNDER_OFFER"
++    db.commit()
++    assert db.query(models.NegotiationRound).count() == 0
++    result = offers_router.accept_offer(legacy.id, world["farmer"], db)
++    assert result["accepted"] is True
++    rounds = db.query(models.NegotiationRound).all()
++    assert len(rounds) == 1 and rounds[0].status == "ACCEPTED"
++    assert db.query(models.NegotiationAgreement).one().terms["price_per_kg"] == 27
++
++
++def test_accepting_one_offer_closes_rivals_when_lot_sells_out(db, world):
++    first = make_offer(db, world, price=25, qty=100)
++    rival = offers_router.create_offer(
++        schemas.OfferCreate(lot_id=world["lot"].id, offered_price_per_kg=24, quantity_kg=100),
++        world["other_buyer"], db)
++    offers_router.accept_offer(first.id, world["farmer"], db)
++    db.refresh(rival)
++    assert rival.status == "rejected"
++    last = db.query(models.NegotiationRound).filter_by(offer_id=rival.id).one()
++    assert last.status == "REJECTED" and last.responded_by == "system"
++
++
++def test_round_limit(db, world):
++    offer = make_offer(db, world, price=25, qty=40)  # round 1, by the buyer
++    farmer, buyer = ("farmer", world["farmer"]), ("buyer", world["buyer"])
++    for round_no in range(2, 13):  # farmer proposes even rounds, buyer odd
++        counter(db, offer, farmer if round_no % 2 == 0 else buyer, price_per_kg=25 + round_no)
++    assert len(nr.get_negotiation(offer.id, as_(*buyer), db)["rounds"]) == 12
++    with pytest.raises(HTTPException) as e:  # round 12 was the farmer's, so the buyer is up
++        counter(db, offer, buyer, price_per_kg=99)
++    assert e.value.status_code == 400 and "limit" in e.value.detail.lower()
++    # accepting is still possible at the limit
++    assert nr.accept_proposal(offer.id, as_(*buyer), db)["transaction_id"]
+diff --git a/frontend/src/api/client.js b/frontend/src/api/client.js
+index 8f51a7e..9964e4e 100644
+--- a/frontend/src/api/client.js
++++ b/frontend/src/api/client.js
+@@ -133,6 +133,13 @@ export const api = {
+   myOffers: () => request('/offers/mine', { auth: true }),
+   acceptOffer: (id) => request(`/offers/${id}/accept`, { method: 'PATCH', auth: true }),
+   rejectOffer: (id) => request(`/offers/${id}/reject`, { method: 'PATCH', auth: true }),
++  // Negotiation (offer -> counteroffer -> accept/reject -> agreement)
++  getNegotiation: (offerId) => request(`/negotiations/offer/${offerId}`, { auth: true }),
++  counterOffer: (offerId, payload) => request(`/negotiations/offer/${offerId}/counter`, { method: 'POST', body: payload, auth: true }),
++  acceptNegotiation: (offerId) => request(`/negotiations/offer/${offerId}/accept`, { method: 'POST', auth: true }),
++  rejectNegotiation: (offerId) => request(`/negotiations/offer/${offerId}/reject`, { method: 'POST', auth: true }),
++  withdrawNegotiation: (offerId) => request(`/negotiations/offer/${offerId}/withdraw`, { method: 'POST', auth: true }),
++  negotiationForTransaction: (txnId) => request(`/negotiations/transaction/${txnId}`, { auth: true }),
+ 
+   // Matching
+   matchBuyers: (listingId) => request(`/matching/listing/${listingId}`, { auth: true }),
+diff --git a/frontend/src/components/NegotiationPanel.jsx b/frontend/src/components/NegotiationPanel.jsx
+new file mode 100644
+index 0000000..11eae04
+--- /dev/null
++++ b/frontend/src/components/NegotiationPanel.jsx
+@@ -0,0 +1,220 @@
++import React, { useCallback, useEffect, useState } from 'react'
++import { Link } from 'react-router-dom'
++import { api } from '../api/client'
++import Badge from './Badge'
++import { useI18n } from '../i18n/I18nContext'
++import { formatTimestamp } from '../utils/datetime'
++
++// Offer -> Counteroffer -> Accept / Reject -> Agreement -> Transaction record.
++// Backend contract: backend/app/routers/negotiations.py. The server decides
++// whose turn it is (`can`), so the buttons here only mirror what it allows.
++
++const ROUND_TONE = { PROPOSED: 'info', COUNTERED: 'neutral', ACCEPTED: 'success', REJECTED: 'warning', WITHDRAWN: 'neutral' }
++const PICKUP_MODES = ['BUYER_PICKUP', 'FARMER_DELIVERY', 'TO_BE_AGREED']
++
++function TermsList({ terms }) {
++  const { t } = useI18n()
++  const rows = [
++    ['negotiation.term.price', `₹${terms.price_per_kg}/kg`],
++    ['negotiation.term.quantity', `${Number(terms.quantity_kg).toLocaleString()} kg`],
++    ['negotiation.term.quality', terms.quality_grade ? `${t('negotiation.grade')} ${terms.quality_grade}` : null],
++    ['negotiation.term.qualityNotes', terms.quality_notes],
++    ['negotiation.term.pickupMode', terms.pickup_mode ? t(`negotiation.pickup.${terms.pickup_mode}`) : null],
++    ['negotiation.term.pickupDate', terms.pickup_date],
++    ['negotiation.term.deliveryLocation', terms.delivery_location],
++    ['negotiation.term.deliveryDeadline', terms.delivery_deadline],
++  ].filter(([, v]) => v)
++  return (
++    <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
++      {rows.map(([k, v]) => (
++        <div key={k} className="contents">
++          <dt className="text-ink/50 dark:text-paper/50">{t(k)}</dt>
++          <dd className="font-medium break-words">{v}</dd>
++        </div>
++      ))}
++    </dl>
++  )
++}
++
++function RoundCard({ round }) {
++  const { t } = useI18n()
++  return (
++    <li className="bg-white dark:bg-white/5 border border-black/5 dark:border-white/10 rounded-lg p-3">
++      <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
++        <span className="text-xs font-semibold">
++          {t('negotiation.roundLabel', { n: round.round_no })} · {t(`negotiation.by.${round.proposed_by}`)}
++        </span>
++        <Badge tone={ROUND_TONE[round.status] || 'neutral'}>{t(`negotiation.roundStatus.${round.status}`)}</Badge>
++      </div>
++      <TermsList terms={round} />
++      {round.message && <p className="text-xs italic text-ink/60 dark:text-paper/60 mt-2">“{round.message}”</p>}
++      <p className="text-[11px] text-ink/40 dark:text-paper/40 mt-2">
++        {formatTimestamp(round.created_at)}
++        {round.responded_at && round.status !== 'PROPOSED' && ` · ${t('negotiation.closedAt', { when: formatTimestamp(round.responded_at) })}`}
++      </p>
++    </li>
++  )
++}
++
++export function AgreementCard({ agreement, transactionId }) {
++  const { t } = useI18n()
++  if (!agreement) return null
++  return (
++    <div className="bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900 rounded-lg p-3 space-y-2">
++      <div className="flex items-center justify-between gap-2 flex-wrap">
++        <h4 className="text-sm font-semibold text-emerald-800 dark:text-emerald-300">{t('negotiation.agreedTerms')}</h4>
++        <span className="text-[11px] text-ink/50 dark:text-paper/50">
++          {t('negotiation.agreedOn', { when: formatTimestamp(agreement.agreed_at), by: t(`negotiation.by.${agreement.accepted_by}`) })}
++        </span>
++      </div>
++      <TermsList terms={agreement.terms} />
++      <p className="text-[11px] text-ink/50 dark:text-paper/50 font-mono-data break-all">
++        {t('negotiation.recordFingerprint')}: {agreement.terms_hash.slice(0, 16)}… · {t('negotiation.afterRounds', { n: agreement.rounds_count })}
++      </p>
++      {transactionId && (
++        <Link to={`/transactions/${transactionId}`} className="text-xs font-semibold text-forest underline">
++          {t('negotiation.viewTransaction', { id: transactionId })}
++        </Link>
++      )}
++    </div>
++  )
++}
++
++function CounterForm({ current, onSubmit, onCancel, busy }) {
++  const { t } = useI18n()
++  const last = current.rounds[current.rounds.length - 1]
++  const [f, setF] = useState({
++    price_per_kg: last.price_per_kg, quantity_kg: last.quantity_kg,
++    quality_grade: last.quality_grade || '', quality_notes: last.quality_notes || '',
++    pickup_mode: last.pickup_mode || '', pickup_date: last.pickup_date || '',
++    delivery_location: last.delivery_location || '', delivery_deadline: last.delivery_deadline || '',
++    message: '',
++  })
++  const set = (k) => (e) => setF(prev => ({ ...prev, [k]: e.target.value }))
++
++  function submit(e) {
++    e.preventDefault()
++    // Send only what differs from the proposal being answered.
++    const body = {}
++    for (const k of ['price_per_kg', 'quantity_kg']) if (Number(f[k]) !== Number(last[k])) body[k] = Number(f[k])
++    for (const k of ['quality_grade', 'quality_notes', 'pickup_mode', 'pickup_date', 'delivery_location', 'delivery_deadline']) {
++      if (f[k] && f[k] !== (last[k] || '')) body[k] = f[k]
++    }
++    if (f.message.trim()) body.message = f.message.trim()
++    onSubmit(body)
++  }
++
++  const input = 'w-full bg-white dark:bg-white/5 border border-black/10 dark:border-white/15 rounded-lg px-2 py-1.5 text-xs'
++  const label = 'block text-[11px] text-ink/60 dark:text-paper/60 mb-0.5'
++  return (
++    <form onSubmit={submit} className="bg-white dark:bg-white/5 border border-black/10 dark:border-white/15 rounded-lg p-3 space-y-3">
++      <h4 className="text-sm font-semibold">{t('negotiation.counterTitle')}</h4>
++      <p className="text-[11px] text-ink/50 dark:text-paper/50">{t('negotiation.counterHint')}</p>
++      <div className="grid grid-cols-2 gap-3">
++        <div><label className={label}>{t('negotiation.term.price')}</label>
++          <input type="number" min="0" step="0.01" className={input} value={f.price_per_kg} onChange={set('price_per_kg')} /></div>
++        <div><label className={label}>{t('negotiation.term.quantity')}</label>
++          <input type="number" min="0" step="0.01" className={input} value={f.quantity_kg} onChange={set('quantity_kg')} /></div>
++        <div><label className={label}>{t('negotiation.term.quality')}</label>
++          <select className={input} value={f.quality_grade} onChange={set('quality_grade')}>
++            <option value="">{t('negotiation.notSpecified')}</option>
++            {['A', 'B', 'C'].map(g => <option key={g} value={g}>{t('negotiation.grade')} {g}</option>)}
++          </select></div>
++        <div><label className={label}>{t('negotiation.term.pickupMode')}</label>
++          <select className={input} value={f.pickup_mode} onChange={set('pickup_mode')}>
++            <option value="">{t('negotiation.notSpecified')}</option>
++            {PICKUP_MODES.map(m => <option key={m} value={m}>{t(`negotiation.pickup.${m}`)}</option>)}
++          </select></div>
++        <div><label className={label}>{t('negotiation.term.pickupDate')}</label>
++          <input type="date" className={input} value={f.pickup_date} onChange={set('pickup_date')} /></div>
++        <div><label className={label}>{t('negotiation.term.deliveryDeadline')}</label>
++          <input type="date" className={input} value={f.delivery_deadline} onChange={set('delivery_deadline')} /></div>
++      </div>
++      <div><label className={label}>{t('negotiation.term.deliveryLocation')}</label>
++        <input maxLength={200} className={input} value={f.delivery_location} onChange={set('delivery_location')} /></div>
++      <div><label className={label}>{t('negotiation.term.qualityNotes')}</label>
++        <textarea maxLength={500} rows={2} className={input} value={f.quality_notes} onChange={set('quality_notes')} /></div>
++      <div><label className={label}>{t('negotiation.message')}</label>
++        <textarea maxLength={500} rows={2} className={input} value={f.message} onChange={set('message')} /></div>
++      <div className="flex gap-2">
++        <button disabled={busy} type="submit" className="text-xs bg-forest text-paper rounded-lg px-3 py-1.5 font-semibold disabled:opacity-60">
++          {busy ? t('negotiation.working') : t('negotiation.sendCounter')}
++        </button>
++        <button type="button" onClick={onCancel} className="text-xs border border-black/10 dark:border-white/15 rounded-lg px-3 py-1.5 font-semibold">{t('cancel')}</button>
++      </div>
++    </form>
++  )
++}
++
++export default function NegotiationPanel({ offerId, onChanged }) {
++  const { t } = useI18n()
++  const [data, setData] = useState(null)
++  const [error, setError] = useState('')
++  const [busy, setBusy] = useState(false)
++  const [countering, setCountering] = useState(false)
++
++  const load = useCallback(() => {
++    api.getNegotiation(offerId).then(setData).catch(e => setError(e.message))
++  }, [offerId])
++  useEffect(() => { load() }, [load])
++
++  async function run(action) {
++    setBusy(true); setError('')
++    try {
++      const next = await action()
++      setData(next)
++      setCountering(false)
++      if (onChanged) onChanged(next)
++    } catch (e) {
++      setError(e.message)
++    } finally {
++      setBusy(false)
++    }
++  }
++
++  if (error && !data) return <p className="text-xs text-red-600">{error}</p>
++  if (!data) return <p className="text-xs text-ink/50 dark:text-paper/50">{t('common.loading')}</p>
++
++  const closed = data.offer_status !== 'pending'
++  return (
++    <div className="space-y-3">
++      {error && <p className="text-xs text-red-600">{error}</p>}
++      <div className="flex items-center gap-2 flex-wrap text-xs">
++        <Badge tone={data.offer_status === 'accepted' ? 'success' : closed ? 'neutral' : 'info'}>{t(`offer.status.${data.offer_status}`)}</Badge>
++        {data.awaiting && (
++          <span className="text-ink/60 dark:text-paper/60">
++            {data.awaiting === data.viewer_role ? t('negotiation.yourTurn') : t('negotiation.waitingFor', { who: t(`negotiation.by.${data.awaiting}`) })}
++          </span>
++        )}
++      </div>
++
++      <ol className="space-y-2">{data.rounds.map(r => <RoundCard key={r.id} round={r} />)}</ol>
++
++      <AgreementCard agreement={data.agreement} transactionId={data.transaction_id} />
++
++      {countering ? (
++        <CounterForm current={data} busy={busy} onCancel={() => setCountering(false)}
++          onSubmit={(body) => run(() => api.counterOffer(offerId, body))} />
++      ) : (
++        <div className="flex gap-2 flex-wrap">
++          {data.can.accept && (
++            <button disabled={busy} onClick={() => run(() => api.acceptNegotiation(offerId))}
++              className="text-xs bg-forest text-paper rounded-lg px-3 py-1.5 font-semibold disabled:opacity-60">{t('negotiation.accept')}</button>
++          )}
++          {data.can.counter && (
++            <button disabled={busy} onClick={() => setCountering(true)}
++              className="text-xs bg-marigold/90 text-ink rounded-lg px-3 py-1.5 font-semibold disabled:opacity-60">{t('negotiation.counter')}</button>
++          )}
++          {data.can.reject && (
++            <button disabled={busy} onClick={() => run(() => api.rejectNegotiation(offerId))}
++              className="text-xs border border-red-200 text-red-500 rounded-lg px-3 py-1.5 font-semibold disabled:opacity-60">{t('negotiation.reject')}</button>
++          )}
++          {data.can.withdraw && (
++            <button disabled={busy} onClick={() => run(() => api.withdrawNegotiation(offerId))}
++              className="text-xs border border-black/10 dark:border-white/15 rounded-lg px-3 py-1.5 font-semibold disabled:opacity-60">{t('negotiation.withdraw')}</button>
++          )}
++        </div>
++      )}
++    </div>
++  )
++}
+diff --git a/frontend/src/i18n/translations/en.json b/frontend/src/i18n/translations/en.json
+index bc9a7e6..53693c9 100644
+--- a/frontend/src/i18n/translations/en.json
++++ b/frontend/src/i18n/translations/en.json
+@@ -544,6 +544,7 @@
+   "transactions.transactionHash": "Transaction #{{id}}",
+   "transaction.status.OFFER_CREATED": "Offer Created",
+   "transaction.status.OFFER_ACCEPTED": "Offer Accepted",
++  "transaction.status.AGREEMENT_RECORDED": "Agreement Recorded",
+   "transaction.status.ORDER_CONFIRMED": "Confirmed",
+   "transaction.status.LOGISTICS_PENDING": "Transport Pending",
+   "transaction.status.LOGISTICS_CONFIRMED": "Transport Confirmed",
+@@ -1453,5 +1454,46 @@
+   "buyerDemands.paymentTerms.neftWithin3Days": "NEFT within 3 days",
+   "buyerDemands.paymentTerms.advance50BalanceOnDelivery": "50% advance, balance on delivery",
+   "buyerDemands.paymentTerms.fullPaymentOnDelivery": "Full payment on delivery",
+-  "buyerDemands.paymentTerms.fullPaymentWithin7Days": "Full payment within 7 days"
++  "buyerDemands.paymentTerms.fullPaymentWithin7Days": "Full payment within 7 days",
++  "negotiation.open": "Negotiate",
++  "negotiation.close": "Hide negotiation",
++  "negotiation.history": "Agreed terms and negotiation history",
++  "negotiation.term.price": "Price",
++  "negotiation.term.quantity": "Quantity",
++  "negotiation.term.quality": "Quality grade",
++  "negotiation.term.qualityNotes": "Quality / lot notes",
++  "negotiation.term.pickupMode": "Pickup / delivery",
++  "negotiation.term.pickupDate": "Pickup date",
++  "negotiation.term.deliveryLocation": "Delivery location",
++  "negotiation.term.deliveryDeadline": "Deliver by",
++  "negotiation.grade": "Grade",
++  "negotiation.pickup.BUYER_PICKUP": "Buyer collects from farm",
++  "negotiation.pickup.FARMER_DELIVERY": "Farmer delivers to buyer",
++  "negotiation.pickup.TO_BE_AGREED": "To be agreed later",
++  "negotiation.roundLabel": "Round {{n}}",
++  "negotiation.by.buyer": "Buyer",
++  "negotiation.by.farmer": "Farmer",
++  "negotiation.roundStatus.PROPOSED": "Awaiting reply",
++  "negotiation.roundStatus.COUNTERED": "Countered",
++  "negotiation.roundStatus.ACCEPTED": "Accepted",
++  "negotiation.roundStatus.REJECTED": "Rejected",
++  "negotiation.roundStatus.WITHDRAWN": "Withdrawn",
++  "negotiation.closedAt": "answered {{when}}",
++  "negotiation.agreedTerms": "Agreed terms",
++  "negotiation.agreedOn": "Agreed {{when}} · accepted by {{by}}",
++  "negotiation.recordFingerprint": "Record fingerprint (SHA-256)",
++  "negotiation.afterRounds": "after {{n}} round(s)",
++  "negotiation.viewTransaction": "View transaction #{{id}}",
++  "negotiation.counterTitle": "Send a counteroffer",
++  "negotiation.counterHint": "Change only the terms you want to change. Everything else carries over from the latest proposal.",
++  "negotiation.notSpecified": "Not specified",
++  "negotiation.message": "Message (optional)",
++  "negotiation.working": "Working...",
++  "negotiation.sendCounter": "Send counteroffer",
++  "negotiation.yourTurn": "Your turn to respond",
++  "negotiation.waitingFor": "Waiting for the {{who}} to respond",
++  "negotiation.accept": "Accept these terms",
++  "negotiation.counter": "Counteroffer",
++  "negotiation.reject": "Reject",
++  "negotiation.withdraw": "Withdraw my proposal"
+ }
+diff --git a/frontend/src/pages/BuyerDashboard.jsx b/frontend/src/pages/BuyerDashboard.jsx
+index 1e93b55..f73e845 100644
+--- a/frontend/src/pages/BuyerDashboard.jsx
++++ b/frontend/src/pages/BuyerDashboard.jsx
+@@ -5,6 +5,7 @@ import { api } from '../api/client'
+ import { useAuth } from '../context/AuthContext'
+ import StatCard from '../components/StatCard'
+ import Badge from '../components/Badge'
++import NegotiationPanel from '../components/NegotiationPanel'
+ import LoadingSpinner from '../components/LoadingSpinner'
+ import { useI18n } from '../i18n/I18nContext'
+ 
+@@ -24,6 +25,7 @@ export default function BuyerDashboard() {
+   const { user } = useAuth()
+   const { t } = useI18n()
+   const [myOffers, setMyOffers] = useState(null)
++  const [negotiatingId, setNegotiatingId] = useState(null)
+   const [demands, setDemands] = useState(null)
+   const [transactions, setTransactions] = useState(null)
+   const [verification, setVerification] = useState(null)
+@@ -163,10 +165,23 @@ export default function BuyerDashboard() {
+           <p className="text-sm text-ink/50 dark:text-paper/50">{t('ui.noOffers')} {t('buyerDashboard.browseListingsHint')}</p>
+         ) : (
+           <div className="space-y-2">
+-            {myOffers.slice(0, 5).map(o => (
+-              <div key={o.id} className="flex items-center justify-between text-sm border-b border-black/5 dark:border-white/10 pb-2">
+-                <span>{o.lot_id ? t('buyerDashboard.lotHash', { id: o.lot_id }) : t('buyerDashboard.listingHash', { id: o.listing_id })} · ₹{o.offered_price_per_kg}/kg · {o.quantity_kg.toLocaleString()} kg</span>
+-                <Badge tone={o.status === 'accepted' ? 'success' : o.status === 'rejected' ? 'warning' : 'neutral'}>{t(`offer.status.${o.status}`)}</Badge>
++            {[...myOffers].sort((a, b) => (b.status === 'pending') - (a.status === 'pending')).slice(0, 5).map(o => (
++              <div key={o.id} className="text-sm border-b border-black/5 dark:border-white/10 pb-2">
++                <div className="flex items-center justify-between gap-2">
++                  <span>{o.lot_id ? t('buyerDashboard.lotHash', { id: o.lot_id }) : t('buyerDashboard.listingHash', { id: o.listing_id })} · ₹{o.offered_price_per_kg}/kg · {o.quantity_kg.toLocaleString()} kg</span>
++                  <span className="flex items-center gap-2">
++                    <button onClick={() => setNegotiatingId(negotiatingId === o.id ? null : o.id)}
++                      className="text-xs text-forest font-semibold underline">
++                      {negotiatingId === o.id ? t('negotiation.close') : t('negotiation.open')}
++                    </button>
++                    <Badge tone={o.status === 'accepted' ? 'success' : o.status === 'rejected' ? 'warning' : 'neutral'}>{t(`offer.status.${o.status}`)}</Badge>
++                  </span>
++                </div>
++                {negotiatingId === o.id && (
++                  <div className="mt-3">
++                    <NegotiationPanel offerId={o.id} onChanged={() => api.myOffers().then(setMyOffers).catch(() => {})} />
++                  </div>
++                )}
+               </div>
+             ))}
+           </div>
+diff --git a/frontend/src/pages/Lots.jsx b/frontend/src/pages/Lots.jsx
+index 1427949..cabab67 100644
+--- a/frontend/src/pages/Lots.jsx
++++ b/frontend/src/pages/Lots.jsx
+@@ -3,6 +3,7 @@ import { api } from '../api/client'
+ import { useAuth } from '../context/AuthContext'
+ import { useI18n } from '../i18n/I18nContext'
+ import Badge from '../components/Badge'
++import NegotiationPanel from '../components/NegotiationPanel'
+ import LoadingSpinner from '../components/LoadingSpinner'
+ import VerificationBadge from '../components/VerificationBadge'
+ 
+@@ -95,6 +96,7 @@ function LotCard({ lot, mine, onCancelled, onOfferAccepted }) {
+   const [confirm, setConfirm] = useState(false)
+   const [offers, setOffers] = useState(null)
+   const [showOffers, setShowOffers] = useState(false)
++  const [negotiatingId, setNegotiatingId] = useState(null)
+   const [offerBusy, setOfferBusy] = useState(null)
+   const [offerError, setOfferError] = useState('')
+ 
+@@ -123,6 +125,11 @@ function LotCard({ lot, mine, onCancelled, onOfferAccepted }) {
+     }
+   }
+ 
++  async function refreshOffers(view) {
++    try { setOffers(await api.offersForLot(lot.id)) } catch { /* keep the current list */ }
++    if (view && view.offer_status === 'accepted') onOfferAccepted()
++  }
++
+   async function respondOffer(offerId, action) {
+     setOfferBusy(offerId); setOfferError('')
+     try {
+@@ -280,6 +287,13 @@ function LotCard({ lot, mine, onCancelled, onOfferAccepted }) {
+                   <Badge tone={o.status === 'accepted' ? 'success' : o.status === 'rejected' ? 'neutral' : 'info'}>{t(`lots.offerStatus.${o.status}`)}</Badge>
+                 </div>
+                 {o.message && <div className="text-ink/50 dark:text-paper/50 mt-0.5">{o.message}</div>}
++                <button onClick={() => setNegotiatingId(negotiatingId === o.id ? null : o.id)}
++                  className="mt-2 text-forest font-semibold underline">
++                  {negotiatingId === o.id ? t('negotiation.close') : t('negotiation.open')}
++                </button>
++                {negotiatingId === o.id && (
++                  <div className="mt-2"><NegotiationPanel offerId={o.id} onChanged={refreshOffers} /></div>
++                )}
+                 {o.status === 'pending' && (
+                   <div className="flex gap-2 mt-2">
+                     <button disabled={offerBusy === o.id} onClick={() => respondOffer(o.id, 'accept')}
+diff --git a/frontend/src/pages/Marketplace.jsx b/frontend/src/pages/Marketplace.jsx
+index cce6c57..9705d40 100644
+--- a/frontend/src/pages/Marketplace.jsx
++++ b/frontend/src/pages/Marketplace.jsx
+@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
+ import { api } from '../api/client'
+ import { useAuth } from '../context/AuthContext'
+ import Badge from '../components/Badge'
++import NegotiationPanel from '../components/NegotiationPanel'
+ import LoadingSpinner from '../components/LoadingSpinner'
+ import { useI18n } from '../i18n/I18nContext'
+ 
+@@ -200,6 +201,7 @@ function OffersPanel({ listing, onChanged }) {
+   const [busyId, setBusyId] = useState(null)
+   const [confirmAction, setConfirmAction] = useState(null) // { id, type: 'accept'|'reject' }
+   const [successMsg, setSuccessMsg] = useState('')
++  const [negotiatingId, setNegotiatingId] = useState(null)
+ 
+   useEffect(() => {
+     api.offersForListing(listing.id).then(setOffers).catch(() => setOffers([]))
+@@ -264,10 +266,15 @@ function OffersPanel({ listing, onChanged }) {
+         ) : (
+           <div className="space-y-2">
+             {offers.map(o => (
+-              <div key={o.id} className="flex items-center justify-between bg-white dark:bg-white/5 rounded-lg px-3 py-2 text-sm">
++              <div key={o.id} className="bg-white dark:bg-white/5 rounded-lg px-3 py-2 text-sm">
++              <div className="flex items-center justify-between">
+                 <div>
+                   <div className="font-medium">₹{o.offered_price_per_kg}/kg · {o.quantity_kg.toLocaleString()} kg</div>
+                   {o.message && <div className="text-xs text-ink/50 dark:text-paper/50">"{o.message}"</div>}
++                  <button onClick={() => setNegotiatingId(negotiatingId === o.id ? null : o.id)}
++                    className="text-xs text-forest font-semibold underline mt-1">
++                    {negotiatingId === o.id ? t('negotiation.close') : t('negotiation.open')}
++                  </button>
+                 </div>
+                 {o.status === 'pending' ? (
+                   <div className="flex gap-2">
+@@ -280,6 +287,15 @@ function OffersPanel({ listing, onChanged }) {
+                   </div>
+                 ) : <Badge tone={o.status === 'accepted' ? 'success' : 'neutral'}>{t(`offer.status.${o.status}`)}</Badge>}
+               </div>
++              {negotiatingId === o.id && (
++                <div className="mt-3 border-t border-black/5 dark:border-white/10 pt-3">
++                  <NegotiationPanel offerId={o.id} onChanged={(view) => {
++                    api.offersForListing(listing.id).then(setOffers).catch(() => {})
++                    if (view && view.offer_status === 'accepted') onChanged()
++                  }} />
++                </div>
++              )}
++              </div>
+             ))}
+           </div>
+         )}
+diff --git a/frontend/src/pages/TransactionDetail.jsx b/frontend/src/pages/TransactionDetail.jsx
+index f910e95..ac9607f 100644
+--- a/frontend/src/pages/TransactionDetail.jsx
++++ b/frontend/src/pages/TransactionDetail.jsx
+@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom'
+ import { api } from '../api/client'
+ import { useAuth } from '../context/AuthContext'
+ import Badge from '../components/Badge'
++import { AgreementCard } from '../components/NegotiationPanel'
+ import LoadingSpinner from '../components/LoadingSpinner'
+ import { useI18n } from '../i18n/I18nContext'
+ import { formatTimestamp as fmt } from '../utils/datetime'
+@@ -390,6 +391,7 @@ export default function TransactionDetail() {
+   const { t } = useI18n()
+   const [txn, setTxn] = useState(null)
+   const [timeline, setTimeline] = useState(null)
++  const [negotiation, setNegotiation] = useState(null)
+   const [advancing, setAdvancing] = useState(false)
+   const [error, setError] = useState('')
+   const [toast, setToast] = useState('')
+@@ -402,6 +404,8 @@ export default function TransactionDetail() {
+       ])
+       setTxn(txnData)
+       setTimeline(tl)
++      // Agreed terms are supplementary: a failure here must not hide the transaction.
++      api.negotiationForTransaction(Number(id)).then(setNegotiation).catch(() => setNegotiation(null))
+     } catch (e) {
+       setError(e.message)
+     }
+@@ -512,6 +516,21 @@ export default function TransactionDetail() {
+         </div>
+ 
+         <div className="space-y-6">
++          {/* Agreed terms (negotiation record) */}
++          {negotiation && negotiation.agreement && (
++            <div className="bg-white dark:bg-white/5 rounded-2xl shadow-card border border-black/5 dark:border-white/10 p-5">
++              <h2 className="font-display font-semibold text-base mb-4">{t('negotiation.history')}</h2>
++              <AgreementCard agreement={negotiation.agreement} />
++              <ol className="mt-3 space-y-1 text-xs text-ink/60 dark:text-paper/60">
++                {negotiation.rounds.map(r => (
++                  <li key={r.id}>
++                    {t('negotiation.roundLabel', { n: r.round_no })} · {t(`negotiation.by.${r.proposed_by}`)} · ₹{r.price_per_kg}/kg × {Number(r.quantity_kg).toLocaleString()} kg · {t(`negotiation.roundStatus.${r.status}`)}
++                  </li>
++                ))}
++              </ol>
++            </div>
++          )}
++
+           {/* Payment */}
+           <div className="bg-white dark:bg-white/5 rounded-2xl shadow-card border border-black/5 dark:border-white/10 p-5">
+             <h2 className="font-display font-semibold text-base mb-4">{t('transactionDetail.payment')}</h2>
