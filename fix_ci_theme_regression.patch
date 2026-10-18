@@ -1,0 +1,129 @@
+diff --git a/frontend/src/components/Layout.jsx b/frontend/src/components/Layout.jsx
+index cf3b33d..d8c4b3b 100644
+--- a/frontend/src/components/Layout.jsx
++++ b/frontend/src/components/Layout.jsx
+@@ -1,4 +1,4 @@
+-﻿import React, { useState } from 'react'
++import React, { useState } from 'react'
+ import { NavLink, useNavigate } from 'react-router-dom'
+ import {
+   Home, Target, BarChart3, Package, TrendingUp, Store, ShoppingCart, Boxes,
+@@ -9,7 +9,6 @@ import { useAuth } from '../context/AuthContext'
+ import { useTheme } from '../context/ThemeContext'
+ import { useI18n } from '../i18n/I18nContext'
+ import LanguageSelector from './LanguageSelector'
+-import ThemeSelector from './ThemeSelector'
+ import Avatar from './Avatar'
+ 
+ // Grouped sidebar -- every route below already existed in App.jsx before
+@@ -190,12 +189,19 @@ export default function Layout({ children }) {
+       <div className="flex-1 flex flex-col min-w-0">
+         <header className="flex items-center justify-between bg-[rgba(255,255,255,0.86)] backdrop-blur-xl border-b border-black/5 px-4 py-3 sticky top-0 z-10 md:px-8 md:py-4">
+           <div className="flex items-center gap-2 md:hidden">
+-            <button onClick={() => setOpen(true)} className="text-2xl leading-none text-forest" aria-label={t('layout.openNavMenu')}>â˜°</button>
++            <button onClick={() => setOpen(true)} className="text-2xl leading-none text-forest" aria-label={t('layout.openNavMenu')}>☰</button>
+             <img src="/apple-touch-icon.png" alt="CropRetain" className="w-7 h-7 rounded-full object-cover" />
+           </div>
+           <div className="hidden md:block" />
+           <div className="flex items-center gap-3">
+-            <ThemeSelector />
++            <button
++              onClick={toggleTheme}
++              className="text-sm px-3 py-1.5 rounded-lg border border-forest/10 hover:bg-forest/5 transition-colors flex items-center justify-center text-forest"
++              aria-label={t('layout.toggleDarkMode')}
++              title={theme === 'dark' ? t('layout.switchToLightMode') : t('layout.switchToDarkMode')}
++            >
++              {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
++            </button>
+             <LanguageSelector />
+             <Avatar role={role} name={role === 'buyer' ? user?.company_name : user?.name} size="sm" />
+           </div>
+@@ -238,4 +244,3 @@ export default function Layout({ children }) {
+     </div>
+   )
+ }
+-
+diff --git a/frontend/src/context/ThemeContext.jsx b/frontend/src/context/ThemeContext.jsx
+index b311921..0312767 100644
+--- a/frontend/src/context/ThemeContext.jsx
++++ b/frontend/src/context/ThemeContext.jsx
+@@ -1,57 +1,38 @@
+-import React, { createContext, useContext, useEffect, useState } from 'react';
++import React, { createContext, useContext, useEffect, useState } from 'react'
+ 
+-// Theme identifiers
+-export const THEMES = {
+-  DEEP_FOREST: 'deep_forest',
+-  IVORY_INK: 'ivory_ink',
+-  GRAPHITE_NIGHT: 'graphite_night',
+-  BLACK_LEAF: 'black_leaf',
+-};
+-
+-const STORAGE_KEY = 'cropretain_theme_id';
+-
+-const ThemeContext = createContext(null);
++const ThemeContext = createContext(null)
++const STORAGE_KEY = 'cropretain_theme'
+ 
+ export function ThemeProvider({ children }) {
+-  const [themeId, setThemeId] = useState(() => {
+-    // Load saved theme or fall back to default (Deep Forest)
++  const [theme, setTheme] = useState(() => {
+     try {
+-      const saved = localStorage.getItem(STORAGE_KEY);
+-      if (saved && Object.values(THEMES).includes(saved)) {
+-        return saved;
+-      }
++      const saved = localStorage.getItem(STORAGE_KEY)
++      if (saved === 'light' || saved === 'dark') return saved
+     } catch (e) {}
+-    return THEMES.DEEP_FOREST;
+-  });
++    return (typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches)
++      ? 'dark' : 'light'
++  })
+ 
+-  // Apply theme class to <html>
+   useEffect(() => {
+-    const root = document.documentElement;
+-    // Clean up old theme classes
+-    Object.values(THEMES).forEach((t) => root.classList.remove(`theme-${t}`));
+-    // Add the current theme class
+-    root.classList.add(`theme-${themeId}`);
+-    // Persist selection
+-    try {
+-      localStorage.setItem(STORAGE_KEY, themeId);
+-    } catch (e) {}
+-  }, [themeId]);
++    const root = document.documentElement
++    if (theme === 'dark') root.classList.add('dark')
++    else root.classList.remove('dark')
++    try { localStorage.setItem(STORAGE_KEY, theme) } catch (e) {}
++  }, [theme])
+ 
+-  const setTheme = (id) => {
+-    if (Object.values(THEMES).includes(id)) {
+-      setThemeId(id);
+-    }
+-  };
++  function toggleTheme() {
++    setTheme(t => (t === 'dark' ? 'light' : 'dark'))
++  }
+ 
+   return (
+-    <ThemeContext.Provider value={{ themeId, setTheme, THEMES }}>
++    <ThemeContext.Provider value={{ theme, toggleTheme, setTheme }}>
+       {children}
+     </ThemeContext.Provider>
+-  );
++  )
+ }
+ 
+ export function useTheme() {
+-  const ctx = useContext(ThemeContext);
+-  if (!ctx) throw new Error('useTheme must be used within ThemeProvider');
+-  return ctx;
++  const ctx = useContext(ThemeContext)
++  if (!ctx) throw new Error('useTheme must be used within ThemeProvider')
++  return ctx
+ }
