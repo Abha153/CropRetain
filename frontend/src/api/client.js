@@ -100,6 +100,8 @@ export const api = {
   // Market
   getCrops: () => request('/market/crops'),
   getMarkets: () => request('/market/markets'),
+  getSoilOptions: () => request('/soil/options'),
+  soilAdvise: (payload) => request('/soil/advise', { method: 'POST', body: payload }),
   nearestMarket: (latitude, longitude) => request(`/market/nearest-market?latitude=${latitude}&longitude=${longitude}`),
   getFarmerWeather: () => request('/weather/farmer', { auth: true }),
   getWeatherByLocation: (latitude, longitude, location) => {

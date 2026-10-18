@@ -42,6 +42,7 @@ Small farmers often sell at whatever price is nearest, because comparing mandis,
 - 👥 **Group selling / FarmPool**: pool produce with other farmers for better rates.
 - 📦 **Lots**, **quality grading** from an uploaded photo, **receipts**, **payments tracking**, **grievances**.
 - ☁️ **Weather** cards and **arrival intelligence** for mandis.
+- 🌱 **Soil Advisor**: screens Paddy, Soybean and Chana against pH, soil texture and season using cited published guidance, explains each check, and shows the estimated net return at nearby markets via the existing market-comparison logic. See [docs/SOIL_ADVISOR.md](docs/SOIL_ADVISOR.md).
 
 **For buyers**
 - Post demands, make and negotiate offers, get verified (verification badge, audit log), and view trust summaries.
@@ -206,6 +207,7 @@ CropRetain is a hackathon-stage product, and it says so in the code. Please be a
 - **Quality grading is heuristic.** It analyses real pixel statistics (colour, brightness, texture) but is not a trained deep-learning model.
 - **Live data depends on API keys.** Without them the app runs on a seeded demo dataset, clearly labelled.
 - **ML forecast needs trained artifacts** and recent price history; otherwise it reports unavailability.
+- **Soil Advisor is a rule check, not soil detection.** It covers 3 of 10 catalogue crops (only those with cited sources), uses guidance that is not specific to Chhattisgarh, and takes soil values the farmer enters. No photo or sensor analysis, no nutrient or salinity checks.
 
 ## Roadmap
 - [ ] Real payment integration (UPI / escrow)

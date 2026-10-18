@@ -1,38 +1,57 @@
-import React, { createContext, useContext, useEffect, useState } from 'react'
+import React, { createContext, useContext, useEffect, useState } from 'react';
 
-const ThemeContext = createContext(null)
-const STORAGE_KEY = 'cropretain_theme'
+// Theme identifiers
+export const THEMES = {
+  DEEP_FOREST: 'deep_forest',
+  IVORY_INK: 'ivory_ink',
+  GRAPHITE_NIGHT: 'graphite_night',
+  BLACK_LEAF: 'black_leaf',
+};
+
+const STORAGE_KEY = 'cropretain_theme_id';
+
+const ThemeContext = createContext(null);
 
 export function ThemeProvider({ children }) {
-  const [theme, setTheme] = useState(() => {
+  const [themeId, setThemeId] = useState(() => {
+    // Load saved theme or fall back to default (Deep Forest)
     try {
-      const saved = localStorage.getItem(STORAGE_KEY)
-      if (saved === 'light' || saved === 'dark') return saved
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved && Object.values(THEMES).includes(saved)) {
+        return saved;
+      }
     } catch (e) {}
-    return (typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches)
-      ? 'dark' : 'light'
-  })
+    return THEMES.DEEP_FOREST;
+  });
 
+  // Apply theme class to <html>
   useEffect(() => {
-    const root = document.documentElement
-    if (theme === 'dark') root.classList.add('dark')
-    else root.classList.remove('dark')
-    try { localStorage.setItem(STORAGE_KEY, theme) } catch (e) {}
-  }, [theme])
+    const root = document.documentElement;
+    // Clean up old theme classes
+    Object.values(THEMES).forEach((t) => root.classList.remove(`theme-${t}`));
+    // Add the current theme class
+    root.classList.add(`theme-${themeId}`);
+    // Persist selection
+    try {
+      localStorage.setItem(STORAGE_KEY, themeId);
+    } catch (e) {}
+  }, [themeId]);
 
-  function toggleTheme() {
-    setTheme(t => (t === 'dark' ? 'light' : 'dark'))
-  }
+  const setTheme = (id) => {
+    if (Object.values(THEMES).includes(id)) {
+      setThemeId(id);
+    }
+  };
 
   return (
-    <ThemeContext.Provider value={{ theme, toggleTheme, setTheme }}>
+    <ThemeContext.Provider value={{ themeId, setTheme, THEMES }}>
       {children}
     </ThemeContext.Provider>
-  )
+  );
 }
 
 export function useTheme() {
-  const ctx = useContext(ThemeContext)
-  if (!ctx) throw new Error('useTheme must be used within ThemeProvider')
-  return ctx
+  const ctx = useContext(ThemeContext);
+  if (!ctx) throw new Error('useTheme must be used within ThemeProvider');
+  return ctx;
 }

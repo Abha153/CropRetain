@@ -19,6 +19,7 @@ from app.routers import offer_negotiation
 from app.routers import transporters, transport_negotiation
 from app.routers import trust
 from app.routers import price_forecast_ml
+from app.routers import soil
 
 Base.metadata.create_all(bind=engine)
 run_lightweight_migrations()
@@ -155,3 +156,4 @@ app.include_router(ratings.router)
 app.include_router(trip_reviews.router)
 app.include_router(trust.router)
 app.include_router(weather.router)
+app.include_router(soil.router)

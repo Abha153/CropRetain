@@ -31,6 +31,7 @@ import Transport from './pages/Transport'
 import TransporterDashboard from './pages/TransporterDashboard'
 import ArrivalIntelligence from './pages/ArrivalIntelligence'
 import BestOption from './pages/BestOption'
+import SoilAdvisor from './pages/SoilAdvisor'
 
 function Protected({ children, role }) {
   return (
@@ -76,6 +77,7 @@ export default function App() {
       <Route path="/transporter/dashboard" element={<Protected role="transporter"><TransporterDashboard /></Protected>} />
       <Route path="/arrivals" element={<Protected><ArrivalIntelligence /></Protected>} />
       <Route path="/best-option" element={<Protected><BestOption /></Protected>} />
+      <Route path="/soil-advisor" element={<Protected role="farmer"><SoilAdvisor /></Protected>} />
 
       <Route path="*" element={<Landing />} />
     </Routes>

@@ -306,6 +306,23 @@ class AdvisorRequest(BaseModel):
     harvest_date: Optional[str] = None
 
 
+# ---------- Soil Advisor ----------
+
+class SoilAdvisorRequest(BaseModel):
+    """All soil inputs are optional individually, but at least one must be
+    given (checked in the router). `quantity_kg` + `location` are an
+    optional pair: when both are supplied the response also carries each
+    crop's estimated net return from the existing market-comparison logic.
+    Nothing here is a yield assumption -- quantity is whatever the farmer
+    says they expect to sell."""
+    soil_ph: Optional[float] = Field(default=None, ge=0, le=14)
+    soil_texture: Optional[str] = None      # validated against TEXTURE_CLASSES in the router
+    season: Optional[str] = None            # kharif | rabi | zaid
+    irrigation: Optional[str] = None        # rainfed | limited | assured
+    quantity_kg: Optional[float] = Field(default=None, gt=0)
+    location: Optional[str] = None          # a market/location name known to CropRetain
+
+
 # ---------- Profit calculator ----------
 
 class ProfitScenario(BaseModel):
