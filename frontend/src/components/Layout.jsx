@@ -1,4 +1,4 @@
-﻿import React, { useState } from 'react'
+import React, { useState } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   Home, Target, BarChart3, Package, TrendingUp, Store, ShoppingCart, Boxes,
@@ -9,7 +9,6 @@ import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
 import { useI18n } from '../i18n/I18nContext'
 import LanguageSelector from './LanguageSelector'
-import ThemeSelector from './ThemeSelector'
 import Avatar from './Avatar'
 
 // Grouped sidebar -- every route below already existed in App.jsx before
@@ -190,12 +189,19 @@ export default function Layout({ children }) {
       <div className="flex-1 flex flex-col min-w-0">
         <header className="flex items-center justify-between bg-[rgba(255,255,255,0.86)] backdrop-blur-xl border-b border-black/5 px-4 py-3 sticky top-0 z-10 md:px-8 md:py-4">
           <div className="flex items-center gap-2 md:hidden">
-            <button onClick={() => setOpen(true)} className="text-2xl leading-none text-forest" aria-label={t('layout.openNavMenu')}>â˜°</button>
+            <button onClick={() => setOpen(true)} className="text-2xl leading-none text-forest" aria-label={t('layout.openNavMenu')}>☰</button>
             <img src="/apple-touch-icon.png" alt="CropRetain" className="w-7 h-7 rounded-full object-cover" />
           </div>
           <div className="hidden md:block" />
           <div className="flex items-center gap-3">
-            <ThemeSelector />
+            <button
+              onClick={toggleTheme}
+              className="text-sm px-3 py-1.5 rounded-lg border border-forest/10 hover:bg-forest/5 transition-colors flex items-center justify-center text-forest"
+              aria-label={t('layout.toggleDarkMode')}
+              title={theme === 'dark' ? t('layout.switchToLightMode') : t('layout.switchToDarkMode')}
+            >
+              {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+            </button>
             <LanguageSelector />
             <Avatar role={role} name={role === 'buyer' ? user?.company_name : user?.name} size="sm" />
           </div>
@@ -238,4 +244,3 @@ export default function Layout({ children }) {
     </div>
   )
 }
-
