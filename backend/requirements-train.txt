@@ -1,0 +1,5 @@
+# Needed ONLY to (re)train the price-forecast model -- not to serve it.
+# Training compares HistGradientBoosting against CatBoost on identical features/splits;
+# if catboost is missing the trainer skips that challenger and says so.
+-r requirements-ml.txt
+catboost>=1.2

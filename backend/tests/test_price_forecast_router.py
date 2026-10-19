@@ -29,7 +29,7 @@ from tests.test_price_forecast import _synthetic_frame, T  # reuse the synthetic
 @pytest.fixture(scope="module")
 def art_dir(tmp_path_factory):
     out = tmp_path_factory.mktemp("router_artifacts")
-    T.train_from_frame(_synthetic_frame(), out, max_iter=30, min_train_rows=200, min_leaf=20)
+    T.train_from_frame(_synthetic_frame(), out, max_iter=30, min_train_rows=200, min_leaf=20, min_heldout_rows=1)
     return out
 
 
@@ -92,3 +92,69 @@ def test_compare_reuses_existing_logic_and_adds_forecast(db, art_dir, monkeypatc
     assert by["Raipur"]["ml_forecast"]["available"] is False and "forecast_net_profit" not in by["Raipur"]
     assert out["forecast_coverage"] == "1 of 2 markets"
     assert out["forecast_recommended_market"] == "Bilaspur"
+
+
+def test_analysis_endpoint(art_dir, monkeypatch, tmp_path):
+    monkeypatch.setenv("PRICE_FORECAST_ARTIFACT_DIR", str(art_dir))
+    out = r.ml_analysis()
+    assert out["available"] is True and out["horizon_days"] == 7
+    assert out["overall"]["test"]["model"]["mae"] > 0 and "baseline_persistence" in out["overall"]["test"]
+    st = r.ml_status()
+    assert st["available"] is True and st["model_family"] and st["interval"]["nominal"] == 0.8
+
+    import shutil
+    partial = tmp_path / "partial"
+    shutil.copytree(art_dir, partial)
+    (partial / "analysis.json").unlink()
+    monkeypatch.setenv("PRICE_FORECAST_ARTIFACT_DIR", str(partial))
+    assert r.ml_analysis() == {"available": False, "reason": "analysis_missing",
+                               "message": "analysis.json not found; retrain with scripts/train_price_forecast.py"}
+    monkeypatch.setenv("PRICE_FORECAST_ARTIFACT_DIR", str(tmp_path / "none"))
+    assert r.ml_analysis()["reason"] == "artifacts_missing"
+
+
+def test_past_prices_endpoint_uses_live_rows_only(db):
+    from app.routers import past_prices as pr
+    db.add(models.MarketPrice(crop="Onion", market="Pune", date="2026-10-17", min_price=1000, max_price=2000,
+                              modal_price=1500, data_source="demo"))
+    db.add(models.MarketPrice(crop="Onion", market="Pune", date="2026-10-18", min_price=1000, max_price=2000,
+                              modal_price=1700, data_source="live"))
+    db.commit()
+    out = pr.get_past_prices(crop="Onion", market="Pune", days=None, db=db)
+    dates = [p["date"] for p in out["points"]]
+    assert "2026-10-17" not in dates and dates[-1] == "2026-10-18"
+    assert out["summary"]["latest"]["source"] == "live"
+    assert pr.get_past_prices(crop="Onion", market="Nowhere", days=None, db=db)["available"] is False
+
+
+def test_state_forecast_endpoint(tmp_path, monkeypatch):
+    import numpy as np
+    import pandas as pd
+    from app.services import past_prices
+    from scripts import train_state_forecast as S
+    rng = np.random.default_rng(1)
+    days = pd.date_range(end=pd.Timestamp.today().normalize() - pd.Timedelta(days=2), periods=500)
+    rows = []
+    for crop, base in (("Onion", 2000.0), ("Potato", 1200.0)):
+        p = base * np.exp(np.cumsum(rng.normal(0, 0.02, len(days))))
+        rows += [{"state": "Maharashtra", "crop": crop, "date": d.date().isoformat(), "modal": float(v),
+                  "arrival_tonnes": 10.0, "source": "x"} for d, v in zip(days, p)]
+    csv = tmp_path / "state.csv"
+    pd.DataFrame(rows).to_csv(csv, index=False)
+    out = tmp_path / "art"
+    T.train_from_frame(S.state_frame(csv), out, max_iter=30, min_train_rows=200, min_leaf=20, min_heldout_rows=1)
+    monkeypatch.setenv("PRICE_FORECAST_STATE_ARTIFACT_DIR", str(out))
+    monkeypatch.setattr(past_prices, "_state_series", lambda: {
+        (r["crop"], r["state"]): {} for r in rows} | {
+        k: {x["date"]: {"date": x["date"], "modal": x["modal"]} for x in rows if (x["crop"], x["state"]) == k}
+        for k in {(r["crop"], r["state"]) for r in rows}})
+    res = r.ml_state_forecast(crop="Onion", state="Maharashtra")
+    assert res["available"] is True and res["data_age_days"] == 2
+    f = res["forecast"]
+    assert f["predicted_price_low"] <= f["predicted_price"] <= f["predicted_price_high"]
+    assert "historical_replay" not in " ".join(f["warnings"])
+    assert res["model"]["this_crop_test"]["rows"] > 0
+    assert r.ml_state_forecast(crop="Wheat", state="Maharashtra")["reason"] == "no_state_history"
+    # data that is too old is refused, not forecast
+    monkeypatch.setattr(r, "STATE_MAX_AGE_DAYS", 1)
+    assert r.ml_state_forecast(crop="Onion", state="Maharashtra")["reason"] == "stale_history"

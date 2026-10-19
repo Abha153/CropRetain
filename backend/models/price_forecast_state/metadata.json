@@ -1,0 +1,234 @@
+{
+  "schema_version": 1,
+  "horizon_days": 7,
+  "target_field": "modal_price",
+  "unit": "INR per quintal (100 kg)",
+  "target": "log(price[as_of+H] / price[as_of])",
+  "model_family": "hgb",
+  "model_label": "HistGradientBoosting on log price-ratio (scikit-learn)",
+  "selection": {
+    "rule": "lowest validation MAE; a challenger must beat the incumbent by >= 1%",
+    "chosen": "hgb",
+    "incumbent": "hgb",
+    "margin": 0.01,
+    "validation_mae": {
+      "hgb": 201.823356,
+      "catboost": 200.024011
+    },
+    "test_split_used_for_selection": false
+  },
+  "feature_cols": [
+    "commodity_idx",
+    "log_price",
+    "ret_7",
+    "ret_14",
+    "dev_ma7",
+    "dev_ma28",
+    "cv_28",
+    "n_obs_7",
+    "n_obs_28",
+    "target_month",
+    "target_doy"
+  ],
+  "categorical_cols": [
+    "commodity_idx"
+  ],
+  "commodity_idx": {
+    "Onion": 0,
+    "Potato": 1,
+    "Tomato": 2
+  },
+  "commodity_map": {},
+  "known_markets": [],
+  "market_map": {},
+  "dataset": "Agmarknet state-wide daily average (state_prices.csv)",
+  "dataset_files": [
+    "state_prices.csv"
+  ],
+  "data_date_range": [
+    "2023-10-17",
+    "2026-10-17"
+  ],
+  "split": {
+    "train_through_target_date": "2025-11-18",
+    "val_through_target_date": "2026-04-30",
+    "rows": {
+      "train": 4258,
+      "val": 918,
+      "test": 966
+    },
+    "purge_days": 7
+  },
+  "best_iter": 20,
+  "min_samples_leaf": 30,
+  "interval": {
+    "nominal": 0.8,
+    "log_pad": 0.003464,
+    "method": "q10/q90 quantile models, widened by a split-conformal pad fitted on the validation split only (test coverage is out-of-sample)"
+  },
+  "excluded_crops": {},
+  "metrics": {
+    "validation": {
+      "rows": 918,
+      "model": {
+        "mae": 201.823356,
+        "rmse": 306.70519,
+        "mape": 0.139774
+      },
+      "baseline_persistence": {
+        "mae": 209.670871,
+        "rmse": 317.725963,
+        "mape": 0.146256
+      },
+      "baseline_ma7": {
+        "mae": 212.863514,
+        "rmse": 315.345956,
+        "mape": 0.148889
+      },
+      "interval_coverage_80": 0.801743,
+      "unit": "INR per quintal (100 kg)",
+      "model_beats_persistence": true
+    },
+    "test": {
+      "rows": 966,
+      "model": {
+        "mae": 266.466792,
+        "rmse": 388.256046,
+        "mape": 0.145863
+      },
+      "baseline_persistence": {
+        "mae": 284.478654,
+        "rmse": 407.968702,
+        "mape": 0.154267
+      },
+      "baseline_ma7": {
+        "mae": 268.901958,
+        "rmse": 391.338804,
+        "mape": 0.147378
+      },
+      "interval_coverage_80": 0.750518,
+      "unit": "INR per quintal (100 kg)",
+      "model_beats_persistence": true
+    },
+    "candidates": {
+      "hgb": {
+        "validation": {
+          "rows": 918,
+          "model": {
+            "mae": 201.823356,
+            "rmse": 306.70519,
+            "mape": 0.139774
+          },
+          "baseline_persistence": {
+            "mae": 209.670871,
+            "rmse": 317.725963,
+            "mape": 0.146256
+          },
+          "baseline_ma7": {
+            "mae": 212.863514,
+            "rmse": 315.345956,
+            "mape": 0.148889
+          },
+          "interval_coverage_80": 0.801743,
+          "unit": "INR per quintal (100 kg)",
+          "model_beats_persistence": true
+        },
+        "test": {
+          "rows": 966,
+          "model": {
+            "mae": 266.466792,
+            "rmse": 388.256046,
+            "mape": 0.145863
+          },
+          "baseline_persistence": {
+            "mae": 284.478654,
+            "rmse": 407.968702,
+            "mape": 0.154267
+          },
+          "baseline_ma7": {
+            "mae": 268.901958,
+            "rmse": 391.338804,
+            "mape": 0.147378
+          },
+          "interval_coverage_80": 0.750518,
+          "unit": "INR per quintal (100 kg)",
+          "model_beats_persistence": true
+        },
+        "best_iter": 20,
+        "interval_log_pad": 0.003464
+      },
+      "catboost": {
+        "validation": {
+          "rows": 918,
+          "model": {
+            "mae": 200.024011,
+            "rmse": 299.857522,
+            "mape": 0.138111
+          },
+          "baseline_persistence": {
+            "mae": 209.670871,
+            "rmse": 317.725963,
+            "mape": 0.146256
+          },
+          "baseline_ma7": {
+            "mae": 212.863514,
+            "rmse": 315.345956,
+            "mape": 0.148889
+          },
+          "interval_coverage_80": 0.801743,
+          "unit": "INR per quintal (100 kg)",
+          "model_beats_persistence": true
+        },
+        "test": {
+          "rows": 966,
+          "model": {
+            "mae": 262.717272,
+            "rmse": 384.596808,
+            "mape": 0.143453
+          },
+          "baseline_persistence": {
+            "mae": 284.478654,
+            "rmse": 407.968702,
+            "mape": 0.154267
+          },
+          "baseline_ma7": {
+            "mae": 268.901958,
+            "rmse": 391.338804,
+            "mape": 0.147378
+          },
+          "interval_coverage_80": 0.803313,
+          "unit": "INR per quintal (100 kg)",
+          "model_beats_persistence": true
+        },
+        "best_iter": 32,
+        "interval_log_pad": 0.013973
+      }
+    },
+    "per_crop_test": {
+      "Onion": {
+        "rows": 322,
+        "model_mae": 282.897985,
+        "persistence_mae": 310.757857
+      },
+      "Potato": {
+        "rows": 322,
+        "model_mae": 175.945618,
+        "persistence_mae": 192.607019
+      },
+      "Tomato": {
+        "rows": 322,
+        "model_mae": 340.556772,
+        "persistence_mae": 350.071087
+      }
+    }
+  },
+  "data_prep": null,
+  "created_utc": "2026-10-19T06:26:40+00:00",
+  "versions": {
+    "python": "3.13.16",
+    "sklearn": "1.9.1",
+    "pandas": "3.0.5",
+    "numpy": "2.5.3",
+    "catboost": "1.2.10"
+  }
+}
