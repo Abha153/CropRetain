@@ -33,3 +33,21 @@ Thumbs.db
 **/.env
 **/.env.*
 !**/.env.example
+
+# Local videos and generated promotional assets
+youtube.mp4
+brag-output/
+
+# Temporary reports, patches, and session notes
+trust-readiness.patch
+CROPRETAIN_REPORT.md
+docs/SESSION_CHECKPOINT_NOTES.md
+
+# Accidental duplicate files
+README.md.md
+README.md.txt
+gitignore (1)
+CropWise.code-workspace
+
+# Local duplicate ML documentation (canonical copy is in docs/)
+ /ML_PRICE_FORECAST.md
