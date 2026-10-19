@@ -234,6 +234,10 @@ def _buyer_verification(db: Session, buyer_id: int) -> dict:
     v = db.query(models.BuyerVerification).filter(
         models.BuyerVerification.buyer_id == buyer_id
     ).first()
+    if v is not None and v.reviewed_by == "demo-seed":
+        # Seeded demonstration record (seed_data.ensure_demo_buyer_verification_records):
+        # never a real platform review, so it must not count as verified.
+        return {"state": "NOT_VERIFIED", "tier": "DEMO_SEED", "supported": True}
     tier = display_info(v)["status"]
     # BuyerVerification is the source of truth. A legacy Buyer.verification_status
     # == "verified" with no backing record is deliberately NOT honoured.

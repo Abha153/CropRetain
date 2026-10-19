@@ -6,6 +6,7 @@ from app.config import settings, logger
 from app.database import Base, engine, run_lightweight_migrations
 from sqlalchemy import text
 from app.seed_data import seed, ensure_demo_buyer_verification_records
+from app.demo_policy import auto_seed_allowed
 from app.routers import (
     auth, farmers, buyers, listings, offers, market, advisor,
     forecast, matching, logistics, profit, group_selling, notifications,
@@ -81,7 +82,10 @@ def _backfill_offer_rounds():
 @app.on_event("startup")
 def on_startup():
     t0 = time.monotonic()
-    seed()
+    if auto_seed_allowed(settings.app_env):
+        seed()
+    else:
+        logger.info("startup: APP_ENV=%s -- automatic demo seeding is disabled", settings.app_env)
     _backfill_offer_rounds()
     logger.info("startup: seed() completed in %.3fs", time.monotonic() - t0)
     # Trust summaries need a backing BuyerVerification record for every demo

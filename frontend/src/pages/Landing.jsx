@@ -273,6 +273,11 @@ export default function Landing() {
 
       <footer className="px-6 md:px-10 py-8 text-center text-xs text-ink/40 dark:text-paper/40 font-mono-data">
         {t('landing.footerNote')}
+        <div className="mt-2">
+          <Link to="/disclaimer" className="underline">{t('disclaimer.footerLink')}</Link>
+          <span aria-hidden="true"> · </span>
+          <Link to="/privacy" className="underline">{t('privacy.footerLink')}</Link>
+        </div>
       </footer>
     </div>
   )

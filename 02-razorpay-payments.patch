@@ -1,0 +1,650 @@
+diff --git a/backend/.env.example b/backend/.env.example
+index 46f9357..bf4bf0f 100644
+--- a/backend/.env.example
++++ b/backend/.env.example
+@@ -46,3 +46,11 @@ MARKET_DATA_SOURCE=demo
+ # there is intentionally only ONE key for this source, not a second
+ # "AGMARKNET_API_KEY"; CEDA_API_KEY IS the Agmarknet configuration).
+ CEDA_API_KEY=
++
++# Razorpay payments (backend only). Leave unset to keep payments explicitly
++# unavailable. rzp_test_* keys = Razorpay test mode (no real money).
++# RAZORPAY_KEY_ID=
++# RAZORPAY_KEY_SECRET=
++# Webhook URL to register in the Razorpay dashboard: POST <api>/payments/razorpay/webhook
++# (events: payment.captured, order.paid, payment.failed)
++# RAZORPAY_WEBHOOK_SECRET=
+diff --git a/backend/app/config.py b/backend/app/config.py
+index da601cc..7bf281f 100644
+--- a/backend/app/config.py
++++ b/backend/app/config.py
+@@ -64,6 +64,14 @@ class Settings(BaseSettings):
+     # DEFAULT_DEMO_STATE env var, never by editing business logic.
+     default_demo_state: str = "Maharashtra"
+ 
++    # Razorpay payments (backend-only). Integration stays explicitly
++    # unavailable until BOTH key id and secret are set. rzp_test_* keys run
++    # Razorpay test mode; no real money moves.
++    razorpay_key_id: str = ""
++    razorpay_key_secret: str = ""
++    razorpay_webhook_secret: str = ""
++    razorpay_api_base: str = "https://api.razorpay.com/v1"
++
+     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+ 
+     @property
+diff --git a/backend/app/database.py b/backend/app/database.py
+index 1e1533b..246d9d7 100644
+--- a/backend/app/database.py
++++ b/backend/app/database.py
+@@ -139,10 +139,19 @@ def run_lightweight_migrations():
+             add_column_if_missing("buyer_offers", "agreed_price_per_kg", "FLOAT")
+             add_column_if_missing("buyer_offers", "agreed_quantity_kg", "FLOAT")
+             add_column_if_missing("buyer_offers", "agreed_at", "DATETIME")
++
++            # Razorpay gateway linkage on payments.
++            add_column_if_missing("payments", "gateway", "VARCHAR")
++            add_column_if_missing("payments", "gateway_order_id", "VARCHAR")
++            add_column_if_missing("payments", "gateway_payment_id", "VARCHAR")
+         return
+ 
+     # Postgres path: only the columns added after the Supabase migration.
+     with engine.connect() as conn:
++        # Razorpay gateway linkage on payments (table itself pre-exists).
++        conn.execute(text("ALTER TABLE payments ADD COLUMN IF NOT EXISTS gateway VARCHAR"))
++        conn.execute(text("ALTER TABLE payments ADD COLUMN IF NOT EXISTS gateway_order_id VARCHAR"))
++        conn.execute(text("ALTER TABLE payments ADD COLUMN IF NOT EXISTS gateway_payment_id VARCHAR"))
+         conn.execute(text(
+             "ALTER TABLE market_prices ADD COLUMN IF NOT EXISTS source VARCHAR"
+         ))
+diff --git a/backend/app/models.py b/backend/app/models.py
+index fd54ca2..87c1560 100644
+--- a/backend/app/models.py
++++ b/backend/app/models.py
+@@ -697,12 +697,30 @@ class Payment(Base):
+     received_at = Column(DateTime, nullable=True)
+     notes = Column(Text, nullable=True)
+     is_demo = Column(Boolean, default=True)
++    # Razorpay gateway linkage (NULL for the legacy simulated flow).
++    gateway = Column(String, nullable=True)
++    gateway_order_id = Column(String, nullable=True, index=True)
++    gateway_payment_id = Column(String, nullable=True)
+     created_at = Column(DateTime, default=now)
+     updated_at = Column(DateTime, default=now, onupdate=now)
+ 
+     transaction = relationship("Transaction", back_populates="payments")
+ 
+ 
++class PaymentWebhookEvent(Base):
++    """One row per processed gateway webhook event id -- makes webhook
++    handling idempotent (a retried delivery is acknowledged, not re-applied)."""
++    __tablename__ = "payment_webhook_events"
++
++    id = Column(Integer, primary_key=True, index=True)
++    provider = Column(String, nullable=False)
++    event_id = Column(String, nullable=False)
++    event_type = Column(String, nullable=True)
++    created_at = Column(DateTime, default=now)
++
++    __table_args__ = (UniqueConstraint("provider", "event_id", name="uq_payment_webhook_event"),)
++
++
+ class TransactionEvent(Base):
+     """Phase 12 — Transparent event trail for every transaction."""
+     __tablename__ = "transaction_events"
+diff --git a/backend/app/routers/payments.py b/backend/app/routers/payments.py
+index 424f569..cad3ec2 100644
+--- a/backend/app/routers/payments.py
++++ b/backend/app/routers/payments.py
+@@ -11,16 +11,24 @@ Payment lifecycle:
+     PENDING/DUE → DISPUTED
+ """
+ import datetime as dt
++import json
++import logging
+ import secrets
+ from typing import List, Optional
+ 
+-from fastapi import APIRouter, Depends, HTTPException
++from fastapi import APIRouter, Depends, HTTPException, Request
++from pydantic import BaseModel, Field
++from sqlalchemy.exc import IntegrityError
+ from sqlalchemy.orm import Session
+ 
++from app.config import settings
+ from app.database import get_db
+ from app import models, schemas
+ from app.auth_utils import require_farmer, require_buyer, require_admin, get_current_user
+ from app.routers.transactions import _add_event, _normalize_status
++from app.services import razorpay_service as rzp
++
++logger = logging.getLogger("cropretain.payments")
+ 
+ router = APIRouter(prefix="/payments", tags=["payments"])
+ 
+@@ -104,11 +112,16 @@ def create_payment(
+     if existing:
+         raise HTTPException(status_code=400, detail="A payment record already exists for this transaction")
+ 
++    # The charged amount is always the server-side transaction total. A
++    # client-supplied amount is only accepted if it matches (never used to set it).
++    if payload.amount is not None and abs(float(payload.amount) - float(txn.total_amount)) > 0.01:
++        raise HTTPException(status_code=400, detail="Amount does not match the transaction total")
++
+     payment = models.Payment(
+         transaction_id=payload.transaction_id,
+         buyer_id=buyer.id,
+         farmer_id=txn.farmer_id,
+-        amount=payload.amount,
++        amount=txn.total_amount,
+         payment_method=payload.payment_method,
+         notes=f"{payload.notes or ''} {DEMO_DISCLAIMER}".strip(),
+         payment_due_date=payload.payment_due_date,
+@@ -136,6 +149,11 @@ def initiate_payment(
+         raise HTTPException(status_code=403, detail="Access denied")
+     if payment.payment_status not in ("PENDING", "DUE"):
+         raise HTTPException(status_code=400, detail=f"Cannot initiate from {payment.payment_status} status")
++    if rzp.is_configured():
++        raise HTTPException(
++            status_code=409,
++            detail="Razorpay is enabled: pay via POST /payments/{id}/razorpay/order instead of the simulated flow",
++        )
+ 
+     payment.payment_status = "INITIATED"
+     payment.payment_method = payment_method
+@@ -213,3 +231,194 @@ def complete_transaction(
+     return {"completed": True, "transaction_id": payment.transaction_id}
+ 
+ 
++# ---------------------------------------------------------------------------
++# Razorpay gateway (test mode when rzp_test_* credentials are configured)
++# ---------------------------------------------------------------------------
++
++_PAYABLE_TXN_STATUSES = ("DELIVERED", "PAYMENT_PENDING", "PAYMENT_INITIATED")
++
++
++class RazorpayVerifyIn(BaseModel):
++    razorpay_order_id: str = Field(min_length=1, max_length=64)
++    razorpay_payment_id: str = Field(min_length=1, max_length=64)
++    razorpay_signature: str = Field(min_length=1, max_length=256)
++
++
++def _amount_matches_transaction(payment: models.Payment, txn: models.Transaction) -> bool:
++    return rzp.to_paise(payment.amount) == rzp.to_paise(txn.total_amount)
++
++
++def _mark_gateway_paid(db: Session, payment: models.Payment, gateway_payment_id: str, source: str) -> bool:
++    """Idempotently mark a gateway payment PAID. Returns True only if this call
++    changed state; a repeat (verify then webhook, or a webhook retry) is a no-op."""
++    if payment.payment_status == "PAID":
++        return False
++    payment.payment_status = "PAID"
++    payment.gateway_payment_id = gateway_payment_id
++    payment.payment_method = payment.payment_method or "Razorpay"
++    payment.received_at = dt.datetime.utcnow()
++    txn = db.query(models.Transaction).filter(models.Transaction.id == payment.transaction_id).first()
++    if txn and _normalize_status(txn.status) in _PAYABLE_TXN_STATUSES:
++        txn.status = "PAYMENT_RECEIVED"
++        txn.updated_at = dt.datetime.utcnow()
++        _add_event(db, txn.id, "PAYMENT_RECEIVED",
++                   f"Payment of ₹{payment.amount:,.0f} confirmed by Razorpay ({rzp.mode()} mode, via {source})",
++                   "system", None)
++    return True
++
++
++@router.get("/gateway/status")
++def gateway_status(current=Depends(get_current_user)):
++    """Whether Razorpay is available -- never exposes the secret."""
++    return {
++        "provider": "razorpay",
++        "available": rzp.is_configured(),
++        "mode": rzp.mode(),
++        "key_id": settings.razorpay_key_id if rzp.is_configured() else None,
++        "webhook_configured": bool(settings.razorpay_webhook_secret),
++    }
++
++
++@router.post("/{payment_id}/razorpay/order")
++def create_razorpay_order(
++    payment_id: int,
++    buyer: models.Buyer = Depends(require_buyer),
++    db: Session = Depends(get_db),
++):
++    """Create (or reuse) a Razorpay order for a payment. Amount is server-side."""
++    if not rzp.is_configured():
++        raise HTTPException(status_code=503, detail="Razorpay is not configured (payments unavailable)")
++    payment = db.query(models.Payment).filter(models.Payment.id == payment_id).first()
++    if not payment:
++        raise HTTPException(status_code=404, detail="Payment not found")
++    if payment.buyer_id != buyer.id:
++        raise HTTPException(status_code=403, detail="Access denied")
++    if payment.payment_status not in ("PENDING", "DUE", "INITIATED"):
++        raise HTTPException(status_code=400, detail=f"Cannot pay from {payment.payment_status} status")
++    txn = db.query(models.Transaction).filter(models.Transaction.id == payment.transaction_id).first()
++    if not txn or txn.buyer_id != buyer.id:
++        raise HTTPException(status_code=403, detail="Access denied")
++    if _normalize_status(txn.status) not in _PAYABLE_TXN_STATUSES:
++        raise HTTPException(status_code=400, detail=f"Transaction is not payable in status {txn.status}")
++    if not _amount_matches_transaction(payment, txn):
++        raise HTTPException(status_code=409, detail="Payment amount no longer matches the transaction total")
++
++    if not (payment.gateway == "razorpay" and payment.gateway_order_id):
++        try:
++            order = rzp.create_order(
++                payment.amount,
++                receipt=f"cr-pay-{payment.id}",
++                notes={"payment_id": str(payment.id), "transaction_id": str(txn.id)},
++            )
++        except ValueError as exc:
++            raise HTTPException(status_code=400, detail=str(exc))
++        except rzp.RazorpayError as exc:
++            raise HTTPException(status_code=502, detail=str(exc))
++        payment.gateway = "razorpay"
++        payment.gateway_order_id = order["id"]
++        payment.payment_status = "INITIATED"
++        payment.payment_method = "Razorpay"
++        payment.initiated_at = dt.datetime.utcnow()
++        payment.is_demo = False
++        if _normalize_status(txn.status) in ("DELIVERED", "PAYMENT_PENDING"):
++            txn.status = "PAYMENT_INITIATED"
++            txn.updated_at = dt.datetime.utcnow()
++            _add_event(db, txn.id, "PAYMENT_INITIATED",
++                       f"Razorpay order created for ₹{payment.amount:,.0f} ({rzp.mode()} mode)",
++                       "buyer", buyer.id)
++        db.commit()
++        db.refresh(payment)
++
++    return {
++        "payment_id": payment.id,
++        "order_id": payment.gateway_order_id,
++        "amount_paise": rzp.to_paise(payment.amount),
++        "currency": rzp.CURRENCY,
++        "key_id": settings.razorpay_key_id,
++        "mode": rzp.mode(),
++    }
++
++
++@router.post("/razorpay/verify", response_model=schemas.PaymentOut)
++def verify_razorpay_payment(
++    payload: RazorpayVerifyIn,
++    buyer: models.Buyer = Depends(require_buyer),
++    db: Session = Depends(get_db),
++):
++    """Verify the checkout signature server-side. State changes only if the
++    HMAC is valid for an order this buyer owns -- the client's say-so alone
++    never marks anything paid."""
++    payment = (db.query(models.Payment)
++               .filter(models.Payment.gateway_order_id == payload.razorpay_order_id,
++                       models.Payment.gateway == "razorpay").first())
++    if not payment or payment.buyer_id != buyer.id:
++        raise HTTPException(status_code=404, detail="Payment not found")
++    if not rzp.verify_checkout_signature(payload.razorpay_order_id, payload.razorpay_payment_id,
++                                         payload.razorpay_signature):
++        raise HTTPException(status_code=400, detail="Invalid payment signature")
++    txn = db.query(models.Transaction).filter(models.Transaction.id == payment.transaction_id).first()
++    if not txn or not _amount_matches_transaction(payment, txn):
++        raise HTTPException(status_code=409, detail="Payment amount no longer matches the transaction total")
++    if payment.payment_status in ("FAILED", "DISPUTED"):
++        raise HTTPException(status_code=400, detail=f"Cannot verify from {payment.payment_status} status")
++    _mark_gateway_paid(db, payment, payload.razorpay_payment_id, "checkout verification")
++    db.commit()
++    db.refresh(payment)
++    return payment
++
++
++@router.post("/razorpay/webhook")
++async def razorpay_webhook(request: Request, db: Session = Depends(get_db)):
++    """Razorpay webhook. Signature is checked against the RAW body; events are
++    deduplicated by X-Razorpay-Event-Id so retries never re-apply."""
++    raw = await request.body()
++    signature = request.headers.get("X-Razorpay-Signature", "")
++    if not rzp.verify_webhook_signature(raw, signature):
++        raise HTTPException(status_code=400, detail="Invalid webhook signature")
++    try:
++        event = json.loads(raw)
++    except ValueError:
++        raise HTTPException(status_code=400, detail="Malformed webhook body")
++
++    event_id = request.headers.get("X-Razorpay-Event-Id", "")
++    event_type = event.get("event", "") if isinstance(event, dict) else ""
++    if not event_id:
++        raise HTTPException(status_code=400, detail="Missing event id")
++
++    try:
++        db.add(models.PaymentWebhookEvent(provider="razorpay", event_id=event_id, event_type=event_type))
++        db.flush()
++    except IntegrityError:
++        db.rollback()
++        return {"status": "duplicate_ignored"}
++
++    entity = (((event.get("payload") or {}).get("payment") or {}).get("entity") or {})
++    order_id = entity.get("order_id")
++    pay_id = entity.get("id")
++    if event_type not in ("payment.captured", "order.paid", "payment.failed") or not (order_id and pay_id):
++        db.commit()
++        return {"status": "ignored"}
++
++    payment = (db.query(models.Payment)
++               .filter(models.Payment.gateway_order_id == order_id,
++                       models.Payment.gateway == "razorpay").first())
++    if not payment:
++        db.commit()
++        return {"status": "unknown_order"}
++
++    if event_type == "payment.failed":
++        # Never downgrade a settled payment; a failed attempt can be retried on the same order.
++        db.commit()
++        return {"status": "failure_recorded_no_state_change"}
++
++    txn = db.query(models.Transaction).filter(models.Transaction.id == payment.transaction_id).first()
++    if (entity.get("currency") != rzp.CURRENCY
++            or entity.get("amount") != rzp.to_paise(payment.amount)
++            or not txn or not _amount_matches_transaction(payment, txn)):
++        logger.warning("Razorpay webhook amount/currency mismatch for payment %s", payment.id)
++        db.commit()
++        return {"status": "rejected_amount_mismatch"}
++
++    changed = _mark_gateway_paid(db, payment, pay_id, "webhook")
++    db.commit()
++    return {"status": "processed" if changed else "already_processed"}
+diff --git a/backend/app/services/razorpay_service.py b/backend/app/services/razorpay_service.py
+new file mode 100644
+index 0000000..5334717
+--- /dev/null
++++ b/backend/app/services/razorpay_service.py
+@@ -0,0 +1,91 @@
++"""
++Razorpay integration (backend only).
++
++* No SDK: Orders API is one authenticated POST, signatures are HMAC-SHA256,
++  so ``httpx`` + ``hmac`` (already dependencies / stdlib) are enough.
++* Unavailable until RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are set.
++* Amounts are integers in paise; callers pass rupees computed server-side.
++"""
++import hashlib
++import hmac
++import logging
++from typing import Optional
++
++import httpx
++
++from app.config import settings
++
++logger = logging.getLogger("cropretain.razorpay")
++
++CURRENCY = "INR"
++
++
++class RazorpayUnavailable(Exception):
++    """Credentials not configured."""
++
++
++class RazorpayError(Exception):
++    """Provider call failed."""
++
++
++def is_configured() -> bool:
++    return bool(settings.razorpay_key_id and settings.razorpay_key_secret)
++
++
++def mode() -> str:
++    """'test', 'live' or 'unavailable' -- derived from the key id prefix only."""
++    if not is_configured():
++        return "unavailable"
++    return "test" if settings.razorpay_key_id.startswith("rzp_test_") else "live"
++
++
++def to_paise(amount_rupees: float) -> int:
++    return int(round(float(amount_rupees) * 100))
++
++
++def create_order(amount_rupees: float, receipt: str, notes: Optional[dict] = None) -> dict:
++    if not is_configured():
++        raise RazorpayUnavailable("Razorpay is not configured")
++    paise = to_paise(amount_rupees)
++    if paise < 100:
++        raise ValueError("Amount must be at least ₹1")
++    body = {"amount": paise, "currency": CURRENCY, "receipt": receipt[:40], "notes": notes or {}}
++    try:
++        resp = httpx.post(
++            f"{settings.razorpay_api_base}/orders",
++            json=body,
++            auth=(settings.razorpay_key_id, settings.razorpay_key_secret),
++            timeout=15.0,
++        )
++    except httpx.HTTPError as exc:
++        logger.warning("Razorpay order request failed: %s", type(exc).__name__)
++        raise RazorpayError("Could not reach Razorpay") from exc
++    if resp.status_code == 429:
++        raise RazorpayError("Razorpay rate limit reached; try again shortly")
++    if resp.status_code >= 400:
++        logger.warning("Razorpay order rejected: HTTP %s", resp.status_code)
++        raise RazorpayError(f"Razorpay rejected the order (HTTP {resp.status_code})")
++    data = resp.json()
++    if not data.get("id") or data.get("amount") != paise:
++        raise RazorpayError("Unexpected response from Razorpay")
++    return data
++
++
++def _hmac_hex(secret: str, message: bytes) -> str:
++    return hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
++
++
++def verify_checkout_signature(order_id: str, payment_id: str, signature: str) -> bool:
++    """Checkout callback: HMAC_SHA256(order_id|payment_id, key_secret)."""
++    if not (is_configured() and order_id and payment_id and signature):
++        return False
++    expected = _hmac_hex(settings.razorpay_key_secret, f"{order_id}|{payment_id}".encode("utf-8"))
++    return hmac.compare_digest(expected, signature)
++
++
++def verify_webhook_signature(raw_body: bytes, signature: str) -> bool:
++    """Webhook: HMAC_SHA256(raw request body, webhook secret)."""
++    if not (settings.razorpay_webhook_secret and signature):
++        return False
++    expected = _hmac_hex(settings.razorpay_webhook_secret, raw_body)
++    return hmac.compare_digest(expected, signature)
+diff --git a/backend/tests/test_razorpay_payments.py b/backend/tests/test_razorpay_payments.py
+new file mode 100644
+index 0000000..6a9f1da
+--- /dev/null
++++ b/backend/tests/test_razorpay_payments.py
+@@ -0,0 +1,198 @@
++"""
++Razorpay integration tests. No network: order creation is monkeypatched and
++signatures are computed locally with the same HMAC scheme Razorpay documents.
++"""
++import hashlib
++import hmac
++import json
++import os
++import sys
++from types import SimpleNamespace
++
++import pytest
++from fastapi import FastAPI
++from fastapi.testclient import TestClient
++from sqlalchemy import create_engine
++from sqlalchemy.orm import sessionmaker
++from sqlalchemy.pool import StaticPool
++
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
++
++from app import auth_utils, models
++from app.config import settings
++from app.database import Base, get_db
++from app.routers import payments
++from app.services import razorpay_service as rzp
++
++KEY_SECRET = "test_key_secret"
++WEBHOOK_SECRET = "test_webhook_secret"
++
++
++def _sign(secret: str, message: bytes) -> str:
++    return hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
++
++
++@pytest.fixture()
++def env(monkeypatch):
++    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False},
++                           poolclass=StaticPool)
++    Base.metadata.create_all(bind=engine)
++    Session = sessionmaker(bind=engine)
++    db = Session()
++
++    farmer = models.Farmer(name="F", email="f@example.com", password_hash="x", location="Bilaspur")
++    buyer = models.Buyer(company_name="B", email="b@example.com", password_hash="x", location="Raipur")
++    other = models.Buyer(company_name="B2", email="b2@example.com", password_hash="x", location="Raipur")
++    db.add_all([farmer, buyer, other])
++    db.flush()
++    txn = models.Transaction(farmer_id=farmer.id, buyer_id=buyer.id, final_price_per_kg=40,
++                             quantity_kg=100, total_amount=4000, status="DELIVERED")
++    db.add(txn)
++    db.flush()
++    payment = models.Payment(transaction_id=txn.id, buyer_id=buyer.id, farmer_id=farmer.id,
++                             amount=4000, payment_status="PENDING")
++    db.add(payment)
++    db.commit()
++    ids = SimpleNamespace(buyer=buyer.id, other=other.id, txn=txn.id, payment=payment.id)
++
++    app = FastAPI()
++    app.include_router(payments.router)
++
++    def _db():
++        s = Session()
++        try:
++            yield s
++        finally:
++            s.close()
++
++    current = {"buyer_id": ids.buyer}
++    app.dependency_overrides[get_db] = _db
++    app.dependency_overrides[auth_utils.require_buyer] = lambda: SimpleNamespace(id=current["buyer_id"])
++    app.dependency_overrides[auth_utils.get_current_user] = lambda: {
++        "role": "buyer", "user": SimpleNamespace(id=current["buyer_id"])}
++
++    monkeypatch.setattr(settings, "razorpay_key_id", "rzp_test_abc")
++    monkeypatch.setattr(settings, "razorpay_key_secret", KEY_SECRET)
++    monkeypatch.setattr(settings, "razorpay_webhook_secret", WEBHOOK_SECRET)
++
++    calls = []
++
++    def fake_create_order(amount, receipt, notes=None):
++        calls.append(amount)
++        return {"id": "order_TEST1", "amount": rzp.to_paise(amount)}
++
++    monkeypatch.setattr(rzp, "create_order", fake_create_order)
++
++    yield SimpleNamespace(client=TestClient(app), db=db, ids=ids, current=current, calls=calls,
++                          settings=settings)
++    db.close()
++
++
++def _make_order(env):
++    r = env.client.post(f"/payments/{env.ids.payment}/razorpay/order")
++    assert r.status_code == 200, r.text
++    return r.json()
++
++
++def _webhook(env, order_id="order_TEST1", pay_id="pay_1", amount=400000, currency="INR",
++             event="payment.captured", event_id="evt_1", secret=WEBHOOK_SECRET):
++    body = json.dumps({"event": event, "payload": {"payment": {"entity": {
++        "id": pay_id, "order_id": order_id, "amount": amount, "currency": currency}}}}).encode()
++    return env.client.post("/payments/razorpay/webhook", content=body, headers={
++        "X-Razorpay-Signature": _sign(secret, body), "X-Razorpay-Event-Id": event_id})
++
++
++def _payment(env):
++    env.db.expire_all()
++    return env.db.query(models.Payment).get(env.ids.payment)
++
++
++def test_unavailable_without_credentials(env, monkeypatch):
++    monkeypatch.setattr(settings, "razorpay_key_id", "")
++    r = env.client.post(f"/payments/{env.ids.payment}/razorpay/order")
++    assert r.status_code == 503
++    assert env.client.get("/payments/gateway/status").json()["available"] is False
++
++
++def test_order_uses_server_amount_and_hides_secret(env):
++    data = _make_order(env)
++    assert env.calls == [4000]
++    assert data["amount_paise"] == 400000 and data["currency"] == "INR"
++    assert "secret" not in json.dumps(data).lower()
++    assert _payment(env).payment_status == "INITIATED"
++
++
++def test_order_forbidden_for_other_buyer(env):
++    env.current["buyer_id"] = env.ids.other
++    assert env.client.post(f"/payments/{env.ids.payment}/razorpay/order").status_code == 403
++
++
++def test_verify_rejects_invalid_signature(env):
++    _make_order(env)
++    r = env.client.post("/payments/razorpay/verify", json={
++        "razorpay_order_id": "order_TEST1", "razorpay_payment_id": "pay_1",
++        "razorpay_signature": "bad"})
++    assert r.status_code == 400
++    assert _payment(env).payment_status == "INITIATED"
++
++
++def test_verify_valid_signature_marks_paid_once(env):
++    _make_order(env)
++    sig = _sign(KEY_SECRET, b"order_TEST1|pay_1")
++    body = {"razorpay_order_id": "order_TEST1", "razorpay_payment_id": "pay_1", "razorpay_signature": sig}
++    assert env.client.post("/payments/razorpay/verify", json=body).status_code == 200
++    assert env.client.post("/payments/razorpay/verify", json=body).status_code == 200
++    assert _payment(env).payment_status == "PAID"
++    events = env.db.query(models.TransactionEvent).filter_by(event_type="PAYMENT_RECEIVED").count()
++    assert events == 1
++    assert env.db.query(models.Transaction).get(env.ids.txn).status == "PAYMENT_RECEIVED"
++
++
++def test_webhook_invalid_signature_rejected(env):
++    _make_order(env)
++    assert _webhook(env, secret="wrong").status_code == 400
++    assert _payment(env).payment_status == "INITIATED"
++
++
++def test_webhook_processed_and_duplicate_event_ignored(env):
++    _make_order(env)
++    assert _webhook(env).json()["status"] == "processed"
++    assert _webhook(env).json()["status"] == "duplicate_ignored"
++    assert _payment(env).payment_status == "PAID"
++    assert env.db.query(models.TransactionEvent).filter_by(event_type="PAYMENT_RECEIVED").count() == 1
++
++
++def test_webhook_after_verify_is_idempotent(env):
++    _make_order(env)
++    sig = _sign(KEY_SECRET, b"order_TEST1|pay_1")
++    env.client.post("/payments/razorpay/verify", json={
++        "razorpay_order_id": "order_TEST1", "razorpay_payment_id": "pay_1", "razorpay_signature": sig})
++    assert _webhook(env, event_id="evt_2").json()["status"] == "already_processed"
++    assert env.db.query(models.TransactionEvent).filter_by(event_type="PAYMENT_RECEIVED").count() == 1
++
++
++def test_webhook_amount_or_currency_mismatch_not_paid(env):
++    _make_order(env)
++    assert _webhook(env, amount=100, event_id="e_a").json()["status"] == "rejected_amount_mismatch"
++    assert _webhook(env, currency="USD", event_id="e_b").json()["status"] == "rejected_amount_mismatch"
++    assert _payment(env).payment_status == "INITIATED"
++
++
++def test_webhook_failed_event_does_not_change_state(env):
++    _make_order(env)
++    _webhook(env, event="payment.failed", event_id="e_f")
++    assert _payment(env).payment_status == "INITIATED"
++
++
++def test_create_payment_amount_is_server_derived(env):
++    env.db.query(models.Payment).delete()
++    env.db.commit()
++    bad = env.client.post("/payments", json={"transaction_id": env.ids.txn, "amount": 1})
++    assert bad.status_code == 400
++    ok = env.client.post("/payments", json={"transaction_id": env.ids.txn})
++    assert ok.status_code == 200 and ok.json()["amount"] == 4000
++
++
++def test_simulated_initiate_blocked_when_gateway_enabled(env):
++    r = env.client.patch(f"/payments/{env.ids.payment}/initiate")
++    assert r.status_code == 409

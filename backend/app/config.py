@@ -19,6 +19,13 @@ _PLACEHOLDER_ADMIN_PASSWORD = "cropwise-admin-demo-2026"
 
 class Settings(BaseSettings):
     app_name: str = "CropRetain API"
+    # "development" (default) keeps the local first-run demo seeding. Set
+    # APP_ENV=production on every real deployment: it turns OFF automatic
+    # demo seeding and refuses to create demo accounts.
+    app_env: str = "development"
+    # Password for the opt-in demo accounts (python -m app.demo_accounts).
+    # Deliberately has NO default and is never stored in the repo.
+    demo_account_password: str = ""
     secret_key: str = _PLACEHOLDER_SECRET
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 1440
@@ -67,6 +74,14 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property
+    def admin_credentials_are_default(self) -> bool:
+        """True when the admin login would accept the publicly documented
+        demo credentials (or an empty password)."""
+        return (not self.admin_password
+                or (self.admin_username == _PLACEHOLDER_ADMIN_USERNAME
+                    and self.admin_password == _PLACEHOLDER_ADMIN_PASSWORD))
+
+    @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
@@ -100,4 +115,14 @@ if settings.admin_username == _PLACEHOLDER_ADMIN_USERNAME and settings.admin_pas
         "with the publicly-documented demo default. Set both in your "
         "environment (e.g. Render's dashboard, or backend/.env locally) "
         "before this deployment is reachable by anyone else."
+    )
+
+# In production the default admin credentials are not merely logged: admin
+# login is refused until real ones are set (see routers/auth.py::admin_login).
+from app.demo_policy import is_production  # noqa: E402  (stdlib-only module)
+
+if is_production(settings.app_env) and settings.admin_credentials_are_default:
+    logger.error(
+        "APP_ENV=production but ADMIN_USERNAME/ADMIN_PASSWORD are unset or still the "
+        "publicly documented defaults -- admin login is DISABLED until they are set."
     )

@@ -1,3 +1,5 @@
+import hmac
+
 from fastapi import APIRouter, Depends
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
@@ -8,6 +10,7 @@ from app import models, schemas
 from app.auth_utils import hash_password, verify_password, create_access_token, get_current_user
 from app.services.login_tracking import record_login_event
 from app.errors import AppError
+from app.demo_policy import is_demo_email, is_production
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -17,6 +20,7 @@ def _farmer_dict(f: models.Farmer) -> dict:
         "id": f.id, "name": f.name, "email": f.email, "location": f.location,
         "crops": f.crops, "rating": f.rating, "phone": f.phone,
         "preferred_language": f.preferred_language, "fpo_group": f.fpo_group,
+        "is_demo": is_demo_email(f.email),
     }
 
 
@@ -27,6 +31,7 @@ def _buyer_dict(b: models.Buyer) -> dict:
         "verification_status": b.verification_status,
         "reliability_score": b.reliability_score,
         "preferred_language": b.preferred_language,
+        "is_demo": is_demo_email(b.email),
     }
 
 
@@ -155,7 +160,16 @@ def admin_login(form_data: OAuth2PasswordRequestForm = Depends()):
     user account, and never reachable via the farmer/buyer registration
     flow.
     """
-    if form_data.username != settings.admin_username or form_data.password != settings.admin_password:
+    # Production never accepts the publicly documented default credentials
+    # (or an empty password): the operator must set real ones first.
+    if is_production(settings.app_env) and settings.admin_credentials_are_default:
+        raise AppError(status_code=503, code="ADMIN_NOT_CONFIGURED",
+                       detail="Admin login is disabled until ADMIN_USERNAME and ADMIN_PASSWORD are set")
+    if not settings.admin_password:
+        raise AppError(status_code=401, code="INVALID_ADMIN_CREDENTIALS", detail="Incorrect admin credentials")
+    user_ok = hmac.compare_digest(form_data.username.encode(), settings.admin_username.encode())
+    pass_ok = hmac.compare_digest(form_data.password.encode(), settings.admin_password.encode())
+    if not (user_ok and pass_ok):
         raise AppError(status_code=401, code="INVALID_ADMIN_CREDENTIALS", detail="Incorrect admin credentials")
     token = create_access_token(subject=settings.admin_username, role="admin")
     return {"access_token": token, "role": "admin", "user": {"username": settings.admin_username}}

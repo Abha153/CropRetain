@@ -45,9 +45,12 @@ export default function VerificationBadge({ buyerId, compact = false, className 
   }, [buyerId])
 
   if (!badge) return null
-  const tone = TONE[badge.status] || 'neutral'
-  const label = t(LABEL_KEY[badge.status]) || badge.label
-  const desc = t(DESC_KEY[badge.status]) || badge.description
+  // Seeded demonstration records must never read as a real platform review.
+  const demo = badge.demo_seed === true
+  const tone = demo ? 'neutral' : (TONE[badge.status] || 'neutral')
+  const label = demo ? t('verification.badge.demoSeed') : (t(LABEL_KEY[badge.status]) || badge.label)
+  const desc = demo ? t('verification.badge.demoSeedDesc') : (t(DESC_KEY[badge.status]) || badge.description)
+  const emoji = demo ? '\ud83e\uddea' : EMOJI[badge.status]
 
   const toneClass = {
     neutral: 'text-ink/50 dark:text-paper/50',
@@ -61,7 +64,7 @@ export default function VerificationBadge({ buyerId, compact = false, className 
       title={desc}
       className={`inline-flex items-center gap-1 text-xs font-semibold ${toneClass} ${className}`}
     >
-      <span aria-hidden="true">{EMOJI[badge.status]}</span>
+      <span aria-hidden="true">{emoji}</span>
       {!compact && <span>{label}</span>}
     </span>
   )

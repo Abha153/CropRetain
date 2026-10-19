@@ -1,0 +1,52 @@
+--- a/backend/app/routers/price_forecast_ml.py
++++ b/backend/app/routers/price_forecast_ml.py
+@@ -10,4 +10,5 @@
+-HONESTY: history comes ONLY from genuine live snapshots in market_prices
+-(data_source="live"), exactly like the existing /forecast. Too little or stale
+-history -> available:false with a reason, never a guess. `include_snapshot=true`
+-explicitly replays the tail of the TRAINING dataset (flagged is_historical_replay).
++HONESTY: forecasts prefer genuine live snapshots in market_prices
++(data_source="live"), exactly like the existing /forecast. If live history is
++insufficient or stale, the endpoint can replay the bundled training-history
++CSV when available. Snapshot forecasts are flagged as historical replay and
++must not be presented as current-market prices.
+@@ -44,15 +45,27 @@
+ def _forecast_one(inf, db, crop, market, include_snapshot=False):
+     try:
+         arts = inf.load_artifacts()
+         history, source, replay = _live_history(db, crop, market), "live_db", False
+-        try:
+-            fc = inf.predict(history, crop, market, artifacts=arts)
+-        except inf.ForecastError as e:
+-            if include_snapshot and e.code in ("insufficient_history", "stale_history"):
+-                snap = inf.load_snapshot_history(arts, crop, market)
+-                if not snap:
+-                    raise
+-                source, replay = "training_snapshot", True
+-                fc = inf.predict(snap, crop, market, artifacts=arts, allow_stale=True)
+-            else:
+-                raise
++        if include_snapshot:
++            # Explicit replay mode: use the bundled training CSV if present.
++            snap = inf.load_snapshot_history(arts, crop, market)
++            if snap:
++                source, replay = "training_snapshot", True
++                fc = inf.predict(snap, crop, market, artifacts=arts, allow_stale=True)
++            else:
++                fc = inf.predict(history, crop, market, artifacts=arts)
++        else:
++            # Prefer live prices, but don't block the chart solely because the
++            # live history is stale or too short. Automatically replay the
++            # bundled CSV and mark it as historical in the response.
++            try:
++                fc = inf.predict(history, crop, market, artifacts=arts)
++            except inf.ForecastError as e:
++                if e.code in ("insufficient_history", "stale_history"):
++                    snap = inf.load_snapshot_history(arts, crop, market)
++                    if not snap:
++                        raise
++                    source, replay = "training_snapshot", True
++                    fc = inf.predict(snap, crop, market, artifacts=arts, allow_stale=True)
++                else:
++                    raise
+*** End Patch

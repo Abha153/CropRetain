@@ -32,6 +32,8 @@ import TransporterDashboard from './pages/TransporterDashboard'
 import ArrivalIntelligence from './pages/ArrivalIntelligence'
 import BestOption from './pages/BestOption'
 import SoilAdvisor from './pages/SoilAdvisor'
+import Disclaimer from './pages/Disclaimer'
+import Privacy from './pages/Privacy'
 
 function Protected({ children, role }) {
   return (
@@ -47,6 +49,8 @@ export default function App() {
       <Route path="/" element={<Landing />} />
       <Route path="/login" element={<Auth mode="login" />} />
       <Route path="/register" element={<Auth mode="register" />} />
+      <Route path="/disclaimer" element={<Disclaimer />} />
+      <Route path="/privacy" element={<Privacy />} />
 
       <Route path="/farmer/dashboard" element={<Protected role="farmer"><FarmerDashboard /></Protected>} />
       <Route path="/buyer/dashboard" element={<Protected role="buyer"><BuyerDashboard /></Protected>} />

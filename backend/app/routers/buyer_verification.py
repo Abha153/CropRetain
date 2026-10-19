@@ -178,7 +178,10 @@ def get_buyer_verification_badge(buyer_id: int, db: Session = Depends(get_db)):
     if not buyer:
         raise HTTPException(status_code=404, detail="Buyer not found")
     v = db.query(models.BuyerVerification).filter(models.BuyerVerification.buyer_id == buyer_id).first()
-    return {"buyer_id": buyer_id, **display_info(v)}
+    # `demo_seed` is a bare boolean so the UI can label seeded demonstration
+    # records as demo instead of presenting them as a real platform review.
+    return {"buyer_id": buyer_id, **display_info(v),
+            "demo_seed": bool(v and v.reviewed_by == "demo-seed")}
 
 
 # ---------------------------------------------------------------------------

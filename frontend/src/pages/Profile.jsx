@@ -51,8 +51,8 @@ export default function Profile() {
           <div className="flex items-center gap-2"><MapPin size={14} className="text-forest" /> {user?.location}</div>
           {role === 'farmer' && user?.crops?.length > 0 && <div className="flex items-center gap-2"><Sprout size={14} className="text-forest" /> {t('profile.growing')}: {user.crops.join(', ')}</div>}
           {role === 'farmer' && user?.fpo_group && <div className="flex items-center gap-2"><BriefcaseBusiness size={14} className="text-forest" /> {t('profile.fpo')}: {user.fpo_group}</div>}
-          {role === 'farmer' && <div className="flex items-center gap-2"><Star size={14} className="text-forest" /> {t('profile.rating')}: {user?.rating}/5</div>}
-          {role === 'buyer' && <div className="flex items-center gap-2"><Star size={14} className="text-forest" /> {t('profile.reliability')}: {user?.reliability_score}/100</div>}
+          {/* Stored rating / reliability columns hold seed defaults, not a track record
+              (see services/trust_summary.py), so they are not shown as scores. */}
         </div>
       </div>
 

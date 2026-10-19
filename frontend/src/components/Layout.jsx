@@ -10,6 +10,7 @@ import { useTheme } from '../context/ThemeContext'
 import { useI18n } from '../i18n/I18nContext'
 import LanguageSelector from './LanguageSelector'
 import Avatar from './Avatar'
+import Badge from './Badge'
 
 // Grouped sidebar -- every route below already existed in App.jsx before
 // this reorganization; nothing added or removed, only grouped and given a
@@ -202,13 +203,19 @@ export default function Layout({ children }) {
             >
               {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
             </button>
+            {user?.is_demo && <Badge tone="warning">{t('layout.demoAccount')}</Badge>}
             <LanguageSelector />
             <Avatar role={role} name={role === 'buyer' ? user?.company_name : user?.name} size="sm" />
           </div>
         </header>
-        <main className="flex-1 p-4 pb-24 md:p-8 md:pb-8 max-w-[1500px] w-full mx-auto text-ink">
+        <main className="flex-1 p-4 pb-6 md:p-8 md:pb-8 max-w-[1500px] w-full mx-auto text-ink">
           {children}
         </main>
+        <footer className="px-4 md:px-8 pb-24 md:pb-6 text-center text-xs text-ink/60 dark:text-paper/60">
+          <NavLink to="/disclaimer" className="underline hover:text-forest">{t('disclaimer.footerLink')}</NavLink>
+          <span aria-hidden="true"> · </span>
+          <NavLink to="/privacy" className="underline hover:text-forest">{t('privacy.footerLink')}</NavLink>
+        </footer>
       </div>
       <nav className="md:hidden fixed bottom-0 inset-x-0 z-20 bg-white/95 backdrop-blur border-t border-black/8 grid grid-cols-5 px-2 py-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]" aria-label={t('layout.mobileNavigation')}>
         {(role === 'buyer'
