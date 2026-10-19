@@ -53,7 +53,7 @@ def _forecast_one(inf, db, crop, market, include_snapshot=False):
         try:
             fc = inf.predict(history, crop, market, artifacts=arts)
         except inf.ForecastError as e:
-            if include_snapshot and e.code in ("insufficient_history", "stale_history"):
+            if e.code in ("insufficient_history", "stale_history"):
                 snap = inf.load_snapshot_history(arts, crop, market)
                 if not snap:
                     raise
