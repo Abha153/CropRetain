@@ -158,3 +158,38 @@ def test_state_forecast_endpoint(tmp_path, monkeypatch):
     # data that is too old is refused, not forecast
     monkeypatch.setattr(r, "STATE_MAX_AGE_DAYS", 1)
     assert r.ml_state_forecast(crop="Onion", state="Maharashtra")["reason"] == "stale_history"
+
+
+def test_no_live_history_falls_back_to_labelled_replay(db, art_dir, monkeypatch):
+    """Insufficient live history + a covered snapshot -> real prediction, clearly flagged as replay."""
+    monkeypatch.setenv("PRICE_FORECAST_ARTIFACT_DIR", str(art_dir))
+    out = r.ml_forecast("Tomato", "Bilaspur", False, db)   # no live rows seeded; include_snapshot not needed
+    assert out["available"] is True
+    assert out["history_source"] == "training_snapshot" and out["is_historical_replay"] is True
+    assert out["data_status"] == "historical_replay" and "NOT a current market forecast" in out["data_status_note"]
+    assert any("historical_replay" in w for w in out["forecast"]["warnings"])
+    assert out["forecast"]["history_age_days"] > 3
+
+
+def test_stale_live_history_falls_back_to_labelled_replay(db, art_dir, monkeypatch):
+    monkeypatch.setenv("PRICE_FORECAST_ARTIFACT_DIR", str(art_dir))
+    today = dt.date.today()
+    for i in range(60, 40, -1):  # live rows exist but newest is ~40 days old
+        db.add(models.MarketPrice(crop="Tomato", market="Bilaspur", date=(today - dt.timedelta(days=i)).isoformat(),
+                                  min_price=2150, max_price=2250, modal_price=2200, data_source="live"))
+    db.commit()
+    out = r.ml_forecast("Tomato", "Bilaspur", False, db)
+    assert out["available"] is True and out["is_historical_replay"] is True
+
+
+def test_fresh_live_history_is_never_labelled_replay(db, art_dir, monkeypatch):
+    monkeypatch.setenv("PRICE_FORECAST_ARTIFACT_DIR", str(art_dir))
+    _seed_live(db)
+    out = r.ml_forecast("Tomato", "Bilaspur", False, db)
+    assert out["data_status"] == "live" and out["data_status_note"] is None
+
+
+def test_no_snapshot_for_market_stays_unavailable(db, art_dir, monkeypatch):
+    monkeypatch.setenv("PRICE_FORECAST_ARTIFACT_DIR", str(art_dir))
+    out = r.ml_forecast("Tomato", "Nowhereville", False, db)
+    assert out["available"] is False and out["reason"] == "insufficient_history"

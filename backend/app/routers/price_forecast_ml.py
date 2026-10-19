@@ -11,8 +11,10 @@ it loads artifacts produced by scripts/train_price_forecast.py.
 
 HONESTY: history comes ONLY from genuine live snapshots in market_prices
 (data_source="live"), exactly like the existing /forecast. Too little or stale
-history -> available:false with a reason, never a guess. `include_snapshot=true`
-explicitly replays the tail of the TRAINING dataset (flagged is_historical_replay).
+history -> the tail of the TRAINING dataset is replayed instead when it covers that crop/market
+(automatic; flagged history_source="training_snapshot", is_historical_replay=true,
+data_status="historical_replay" and the forecast's history_age_days). Otherwise available:false
+with a reason, never a guess. `include_snapshot` is accepted for backward compatibility only.
 """
 import json
 
@@ -67,6 +69,9 @@ def _forecast_one(inf, db, crop, market, include_snapshot=False):
     return {
         "crop": crop, "market": market, "available": True,
         "history_source": source, "is_historical_replay": replay,
+        "data_status": "historical_replay" if replay else "live",
+        "data_status_note": (f"Historical replay: based on training-data prices as of {fc['as_of_date']} "
+                             f"({fc['history_age_days']} days ago), NOT a current market forecast.") if replay else None,
         "forecast": fc,
         "model": {
             "type": f"{arts.meta.get('model_label') or 'gradient boosting'}; is_machine_learning=true",

@@ -139,10 +139,19 @@ def run_lightweight_migrations():
             add_column_if_missing("buyer_offers", "agreed_price_per_kg", "FLOAT")
             add_column_if_missing("buyer_offers", "agreed_quantity_kg", "FLOAT")
             add_column_if_missing("buyer_offers", "agreed_at", "DATETIME")
+
+            # Razorpay gateway linkage on payments.
+            add_column_if_missing("payments", "gateway", "VARCHAR")
+            add_column_if_missing("payments", "gateway_order_id", "VARCHAR")
+            add_column_if_missing("payments", "gateway_payment_id", "VARCHAR")
         return
 
     # Postgres path: only the columns added after the Supabase migration.
     with engine.connect() as conn:
+        # Razorpay gateway linkage on payments (table itself pre-exists).
+        conn.execute(text("ALTER TABLE payments ADD COLUMN IF NOT EXISTS gateway VARCHAR"))
+        conn.execute(text("ALTER TABLE payments ADD COLUMN IF NOT EXISTS gateway_order_id VARCHAR"))
+        conn.execute(text("ALTER TABLE payments ADD COLUMN IF NOT EXISTS gateway_payment_id VARCHAR"))
         conn.execute(text(
             "ALTER TABLE market_prices ADD COLUMN IF NOT EXISTS source VARCHAR"
         ))

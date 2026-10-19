@@ -697,10 +697,28 @@ class Payment(Base):
     received_at = Column(DateTime, nullable=True)
     notes = Column(Text, nullable=True)
     is_demo = Column(Boolean, default=True)
+    # Razorpay gateway linkage (NULL for the legacy simulated flow).
+    gateway = Column(String, nullable=True)
+    gateway_order_id = Column(String, nullable=True, index=True)
+    gateway_payment_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=now)
     updated_at = Column(DateTime, default=now, onupdate=now)
 
     transaction = relationship("Transaction", back_populates="payments")
+
+
+class PaymentWebhookEvent(Base):
+    """One row per processed gateway webhook event id -- makes webhook
+    handling idempotent (a retried delivery is acknowledged, not re-applied)."""
+    __tablename__ = "payment_webhook_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    provider = Column(String, nullable=False)
+    event_id = Column(String, nullable=False)
+    event_type = Column(String, nullable=True)
+    created_at = Column(DateTime, default=now)
+
+    __table_args__ = (UniqueConstraint("provider", "event_id", name="uq_payment_webhook_event"),)
 
 
 class TransactionEvent(Base):

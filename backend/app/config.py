@@ -71,6 +71,14 @@ class Settings(BaseSettings):
     # DEFAULT_DEMO_STATE env var, never by editing business logic.
     default_demo_state: str = "Maharashtra"
 
+    # Razorpay payments (backend-only). Integration stays explicitly
+    # unavailable until BOTH key id and secret are set. rzp_test_* keys run
+    # Razorpay test mode; no real money moves.
+    razorpay_key_id: str = ""
+    razorpay_key_secret: str = ""
+    razorpay_webhook_secret: str = ""
+    razorpay_api_base: str = "https://api.razorpay.com/v1"
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property
