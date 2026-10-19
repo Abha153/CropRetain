@@ -1,0 +1,37 @@
+crop,date,modal,label
+Paddy (Rice),2026-10-16,2618.38,Latest
+Paddy (Rice),2026-10-09,2674.36,1 week earlier
+Paddy (Rice),2026-09-16,2883.87,1 month earlier
+Paddy (Rice),2025-10-16,2356.48,1 year earlier
+Paddy (Rice),2024-10-16,2302.0,2 years earlier
+Paddy (Rice),2023-10-16,2221.27,3 years earlier
+Wheat,2026-10-16,2668.42,Latest
+Wheat,2026-10-09,2638.86,1 week earlier
+Wheat,2026-09-16,2653.05,1 month earlier
+Wheat,2025-10-16,2563.56,1 year earlier
+Wheat,2024-10-16,2737.83,2 years earlier
+Wheat,2023-10-16,2510.11,3 years earlier
+Chana (Gram),2026-10-16,7118.65,Latest
+Chana (Gram),2026-10-09,7178.3,1 week earlier
+Chana (Gram),2026-09-16,6120.5,1 month earlier
+Chana (Gram),2025-10-16,5531.72,1 year earlier
+Chana (Gram),2024-10-16,6965.43,2 years earlier
+Chana (Gram),2023-10-16,6205.61,3 years earlier
+Onion,2026-10-16,3498.9,Latest
+Onion,2026-10-09,3071.88,1 week earlier
+Onion,2026-09-16,3714.16,1 month earlier
+Onion,2025-10-16,927.01,1 year earlier
+Onion,2024-10-16,3474.11,2 years earlier
+Onion,2023-10-16,2326.88,3 years earlier
+Potato,2026-10-16,752.31,Latest
+Potato,2026-10-09,726.31,1 week earlier
+Potato,2026-09-16,804.03,1 month earlier
+Potato,2025-10-16,1126.01,1 year earlier
+Potato,2024-10-16,2152.56,2 years earlier
+Potato,2023-10-16,1075.73,3 years earlier
+Tomato,2026-10-16,1340.91,Latest
+Tomato,2026-10-09,1700.48,1 week earlier
+Tomato,2026-09-16,1539.64,1 month earlier
+Tomato,2025-10-16,1627.05,1 year earlier
+Tomato,2024-10-16,4139.32,2 years earlier
+Tomato,2023-10-16,917.11,3 years earlier

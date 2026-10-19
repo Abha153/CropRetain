@@ -1,0 +1,377 @@
+{
+  "schema_version": 1,
+  "horizon_days": 7,
+  "target_field": "modal_price",
+  "unit": "INR per quintal (100 kg)",
+  "target": "log(price[as_of+H] / price[as_of])",
+  "model_family": "hgb",
+  "model_label": "HistGradientBoosting on log price-ratio (scikit-learn)",
+  "selection": {
+    "rule": "lowest validation MAE; a challenger must beat the incumbent by >= 1%",
+    "chosen": "hgb",
+    "incumbent": "hgb",
+    "margin": 0.01,
+    "validation_mae": {
+      "hgb": 274.188792,
+      "catboost": 280.261077
+    },
+    "test_split_used_for_selection": false
+  },
+  "feature_cols": [
+    "commodity_idx",
+    "log_price",
+    "ret_7",
+    "ret_14",
+    "dev_ma7",
+    "dev_ma28",
+    "cv_28",
+    "n_obs_7",
+    "n_obs_28",
+    "target_month",
+    "target_doy"
+  ],
+  "categorical_cols": [
+    "commodity_idx"
+  ],
+  "commodity_idx": {
+    "Onion": 0,
+    "Potato": 1
+  },
+  "commodity_map": {
+    "Onion": {
+      "Onion": 144698
+    },
+    "Potato": {
+      "Potato": 168334
+    },
+    "Tomato": {
+      "Tomato": 12456
+    },
+    "Wheat": {
+      "Wheat": 39480
+    }
+  },
+  "known_markets": [
+    "Ahilyanagar",
+    "Akola",
+    "Bilaspur",
+    "Chhatrapati Sambhajinagar",
+    "Durg",
+    "Kolhapur",
+    "Nagpur",
+    "Pune",
+    "Rajnandgaon",
+    "Sangli",
+    "Solapur"
+  ],
+  "market_map": {
+    "Bilaspur": [
+      "Chhattisgarh/Bilaspur"
+    ],
+    "Durg": [
+      "Chhattisgarh/Durg"
+    ],
+    "Rajnandgaon": [
+      "Chhattisgarh/Rajnandgaon"
+    ],
+    "Ahilyanagar": [
+      "Maharashtra/Ahmednagar"
+    ],
+    "Akola": [
+      "Maharashtra/Akola"
+    ],
+    "Chhatrapati Sambhajinagar": [
+      "Maharashtra/Aurangabad"
+    ],
+    "Kolhapur": [
+      "Maharashtra/Kolhapur"
+    ],
+    "Nagpur": [
+      "Maharashtra/Nagpur"
+    ],
+    "Pune": [
+      "Maharashtra/Pune"
+    ],
+    "Sangli": [
+      "Maharashtra/Sangli"
+    ],
+    "Solapur": [
+      "Maharashtra/Solapur"
+    ]
+  },
+  "dataset": "khandelwalmanas/daily-commodity-prices-india",
+  "dataset_files": [
+    "clean_prices.csv"
+  ],
+  "data_date_range": [
+    "2023-06-06",
+    "2025-06-11"
+  ],
+  "split": {
+    "train_through_target_date": "2024-10-29",
+    "val_through_target_date": "2025-02-15",
+    "rows": {
+      "train": 72326,
+      "val": 13715,
+      "test": 23716
+    },
+    "purge_days": 7
+  },
+  "best_iter": 40,
+  "min_samples_leaf": 100,
+  "interval": {
+    "nominal": 0.8,
+    "log_pad": 0.013687,
+    "method": "q10/q90 quantile models, widened by a split-conformal pad fitted on the validation split only (test coverage is out-of-sample)"
+  },
+  "excluded_crops": {
+    "Tomato": {
+      "train_rows": 2400,
+      "val_rows": 0,
+      "test_rows": 0,
+      "reason": "fewer than 300 rows in the validation and/or test split, so accuracy cannot be measured"
+    },
+    "Wheat": {
+      "train_rows": 11989,
+      "val_rows": 0,
+      "test_rows": 0,
+      "reason": "fewer than 300 rows in the validation and/or test split, so accuracy cannot be measured"
+    }
+  },
+  "metrics": {
+    "validation": {
+      "rows": 13715,
+      "model": {
+        "mae": 274.188792,
+        "rmse": 452.362768,
+        "mape": 0.098702
+      },
+      "baseline_persistence": {
+        "mae": 287.347503,
+        "rmse": 493.778722,
+        "mape": 0.103998
+      },
+      "baseline_ma7": {
+        "mae": 301.899516,
+        "rmse": 480.23101,
+        "mape": 0.112577
+      },
+      "interval_coverage_80": 0.799781,
+      "unit": "INR per quintal (100 kg)",
+      "model_beats_persistence": true
+    },
+    "test": {
+      "rows": 23716,
+      "model": {
+        "mae": 192.244355,
+        "rmse": 343.377929,
+        "mape": 0.102909
+      },
+      "baseline_persistence": {
+        "mae": 182.206587,
+        "rmse": 362.587236,
+        "mape": 0.095471
+      },
+      "baseline_ma7": {
+        "mae": 193.468202,
+        "rmse": 343.493889,
+        "mape": 0.099391
+      },
+      "interval_coverage_80": 0.795033,
+      "unit": "INR per quintal (100 kg)",
+      "model_beats_persistence": false
+    },
+    "candidates": {
+      "hgb": {
+        "validation": {
+          "rows": 13715,
+          "model": {
+            "mae": 274.188792,
+            "rmse": 452.362768,
+            "mape": 0.098702
+          },
+          "baseline_persistence": {
+            "mae": 287.347503,
+            "rmse": 493.778722,
+            "mape": 0.103998
+          },
+          "baseline_ma7": {
+            "mae": 301.899516,
+            "rmse": 480.23101,
+            "mape": 0.112577
+          },
+          "interval_coverage_80": 0.799781,
+          "unit": "INR per quintal (100 kg)",
+          "model_beats_persistence": true
+        },
+        "test": {
+          "rows": 23716,
+          "model": {
+            "mae": 192.244355,
+            "rmse": 343.377929,
+            "mape": 0.102909
+          },
+          "baseline_persistence": {
+            "mae": 182.206587,
+            "rmse": 362.587236,
+            "mape": 0.095471
+          },
+          "baseline_ma7": {
+            "mae": 193.468202,
+            "rmse": 343.493889,
+            "mape": 0.099391
+          },
+          "interval_coverage_80": 0.795033,
+          "unit": "INR per quintal (100 kg)",
+          "model_beats_persistence": false
+        },
+        "best_iter": 40,
+        "interval_log_pad": 0.013687
+      },
+      "catboost": {
+        "validation": {
+          "rows": 13715,
+          "model": {
+            "mae": 280.261077,
+            "rmse": 459.784704,
+            "mape": 0.09952
+          },
+          "baseline_persistence": {
+            "mae": 287.347503,
+            "rmse": 493.778722,
+            "mape": 0.103998
+          },
+          "baseline_ma7": {
+            "mae": 301.899516,
+            "rmse": 480.23101,
+            "mape": 0.112577
+          },
+          "interval_coverage_80": 0.79949,
+          "unit": "INR per quintal (100 kg)",
+          "model_beats_persistence": true
+        },
+        "test": {
+          "rows": 23716,
+          "model": {
+            "mae": 195.444562,
+            "rmse": 340.756047,
+            "mape": 0.104597
+          },
+          "baseline_persistence": {
+            "mae": 182.206587,
+            "rmse": 362.587236,
+            "mape": 0.095471
+          },
+          "baseline_ma7": {
+            "mae": 193.468202,
+            "rmse": 343.493889,
+            "mape": 0.099391
+          },
+          "interval_coverage_80": 0.798996,
+          "unit": "INR per quintal (100 kg)",
+          "model_beats_persistence": false
+        },
+        "best_iter": 85,
+        "interval_log_pad": 0.017927
+      }
+    },
+    "per_crop_test": {
+      "Onion": {
+        "rows": 11423,
+        "model_mae": 245.7321,
+        "persistence_mae": 230.514612
+      },
+      "Potato": {
+        "rows": 12293,
+        "model_mae": 142.542043,
+        "persistence_mae": 137.317416
+      }
+    }
+  },
+  "data_prep": {
+    "input_file": "Agriculture_price_dataset_unclean_full_more_messy.csv",
+    "rows_in": 811131,
+    "rows_out": 369163,
+    "rows_out_share_of_input": 0.4551,
+    "series": 3528,
+    "markets": 1576,
+    "states": 26,
+    "steps": [
+      {
+        "step": "normalise_text",
+        "state_spellings_before": 118,
+        "states_after": 26
+      },
+      {
+        "step": "drop_exact_duplicates",
+        "removed": 11150
+      },
+      {
+        "step": "dates",
+        "format": "%m/%d/%Y",
+        "unparsable_values": 0,
+        "missing_before": 193041,
+        "recovered_from_neighbours": 175528,
+        "simulated_recovery_accuracy": 0.999862
+      },
+      {
+        "step": "recover_identifiers",
+        "state_filled": 187346,
+        "market_filled": 6117,
+        "commodity_filled": 73320
+      },
+      {
+        "step": "drop_rows_missing_required_fields",
+        "removed": 428288,
+        "missing_counts": "{'modal': 200703, 'date': 17513, 'commodity': 128255, 'market': 194673, 'state': 14444}"
+      },
+      {
+        "step": "price_sanity",
+        "non_positive": 0,
+        "modal_outside_min_max_or_max_lt_min": 537,
+        "unit_error_outliers": 1993,
+        "band": "0.15x..8.0x of commodity median"
+      }
+    ],
+    "date_recovery_simulation": {
+      "hidden": 151735,
+      "recovered": 137648,
+      "recovered_share": 0.9072,
+      "accuracy_when_recovered": 0.999862
+    },
+    "identifier_recovery_simulation": {
+      "state_from_market_or_district": {
+        "hidden": 111940,
+        "recovered": 110724,
+        "recovered_share": 0.9891,
+        "accuracy_when_recovered": 1.0
+      },
+      "market_from_state_district": {
+        "hidden": 111940,
+        "recovered": 3805,
+        "recovered_share": 0.034,
+        "accuracy_when_recovered": 0.997635
+      },
+      "commodity_from_variety": {
+        "hidden": 112084,
+        "recovered": 54666,
+        "recovered_share": 0.4877,
+        "accuracy_when_recovered": 1.0
+      }
+    },
+    "notes": [
+      "No prices were imputed; rows without a modal price were dropped.",
+      "A blank date is filled only when the nearest known dates before and after it are identical.",
+      "State/market/commodity are filled only when the dataset maps the key to exactly one value.",
+      "Unit-error filter drops modal prices outside 0.15x-8.0x of the commodity median."
+    ]
+  },
+  "created_utc": "2026-10-18T10:42:23+00:00",
+  "versions": {
+    "python": "3.13.16",
+    "sklearn": "1.9.1",
+    "pandas": "3.0.5",
+    "numpy": "2.5.3",
+    "catboost": "1.2.10"
+  }
+}

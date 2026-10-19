@@ -122,6 +122,12 @@ export const api = {
   getForecast: (crop, market, includeDemo = false) => request(`/forecast?crop=${encodeURIComponent(crop)}&market=${encodeURIComponent(market)}&include_demo=${includeDemo}`),
   // ML forecast (separate route; see backend docs/ML_PRICE_FORECAST.md). includeSnapshot = explicit historical replay.
   getMlForecast: (crop, market, includeSnapshot = false) => request(`/forecast/ml?crop=${encodeURIComponent(crop)}&market=${encodeURIComponent(market)}&include_snapshot=${includeSnapshot}`),
+  // Precomputed held-out-test analysis of the ML forecast (baselines, per-crop/state error, drivers).
+  getMlAnalysis: () => request('/forecast/ml/analysis'),
+  // Next-7-day STATEWIDE average forecast (separate model trained on state-level daily averages).
+  getMlStateForecast: (crop, state) => request(`/forecast/ml/state?crop=${encodeURIComponent(crop)}&state=${encodeURIComponent(state)}`),
+  // Recorded past prices for one crop/market (bundled history + live rows); days omitted = everything recorded; otherwise a window ending at the newest record.
+  getPastPrices: (crop, market, days = null, scope = 'auto') => request(`/market/past-prices?crop=${encodeURIComponent(crop)}&market=${encodeURIComponent(market)}${days ? `&days=${days}` : ''}&scope=${scope}`),
 
   // Listings
   createListing: (payload) => request('/listings', { method: 'POST', body: payload, auth: true }),

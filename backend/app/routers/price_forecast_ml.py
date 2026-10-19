@@ -4,7 +4,9 @@ ML price forecast endpoints -- separate from the existing /forecast route
 it loads artifacts produced by scripts/train_price_forecast.py.
 
   GET /forecast/ml/status    artifact + metric summary
+  GET /forecast/ml/analysis  full held-out-test analysis (baselines, per-crop/state error, drivers)
   GET /forecast/ml           7-day-ahead forecast for one crop/market
+  GET /forecast/ml/state     7-day-ahead STATEWIDE average forecast (separate model, models/price_forecast_state)
   GET /forecast/ml/compare   existing /market/compare result + forecast per market
 
 HONESTY: history comes ONLY from genuine live snapshots in market_prices
@@ -12,6 +14,8 @@ HONESTY: history comes ONLY from genuine live snapshots in market_prices
 history -> available:false with a reason, never a guess. `include_snapshot=true`
 explicitly replays the tail of the TRAINING dataset (flagged is_historical_replay).
 """
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
@@ -65,12 +69,66 @@ def _forecast_one(inf, db, crop, market, include_snapshot=False):
         "history_source": source, "is_historical_replay": replay,
         "forecast": fc,
         "model": {
-            "type": "HistGradientBoosting on log price-ratio (scikit-learn); is_machine_learning=true",
+            "type": f"{arts.meta.get('model_label') or 'gradient boosting'}; is_machine_learning=true",
+            "family": arts.meta.get("model_family"),
+            "beats_persistence_on_test": bool(t.get("model_beats_persistence")),
             "dataset": arts.meta["dataset"], "trained_utc": arts.meta["created_utc"],
             "test_mae_inr_per_quintal": round(t["model"]["mae"], 2),
             "test_rmse_inr_per_quintal": round(t["model"]["rmse"], 2),
             "persistence_baseline_test_mae": round(t["baseline_persistence"]["mae"], 2),
             "evaluated_on": "chronological held-out test split, all markets (not this market alone)",
+        },
+    }
+
+
+STATE_MAX_AGE_DAYS = 14   # state data comes from periodic report exports, so allow a little more age than live sync
+
+
+def _state_dir():
+    import os
+    from pathlib import Path
+    return Path(os.environ.get("PRICE_FORECAST_STATE_ARTIFACT_DIR") or
+                Path(__file__).resolve().parents[2] / "models" / "price_forecast_state")
+
+
+@router.get("/state")
+def ml_state_forecast(crop: str, state: str):
+    """Statewide average-price forecast. History is the bundled statewide daily series (past_prices
+    service); it is only as fresh as the last export, and the response says exactly how old it is."""
+    from app.services import past_prices
+    inf = _service()
+    if inf is None:
+        return _unavailable(crop, state, "ml_dependencies_missing", "pip install -r requirements-ml.txt")
+    series = past_prices._state_series().get((crop, state))
+    if not series:
+        return _unavailable(crop, state, "no_state_history", f"No statewide price history for {crop} in {state}.")
+    try:
+        arts = inf.load_artifacts(_state_dir())
+        history = [{"date": d, "modal_price": r["modal"]} for d, r in sorted(series.items())]
+        fc = inf.predict(history, crop, f"{state} (state average)", artifacts=arts, allow_stale=True)
+    except inf.ForecastError as e:
+        return _unavailable(crop, state, e.code, e.message)
+    age = fc["history_age_days"]
+    if age > STATE_MAX_AGE_DAYS:
+        return _unavailable(crop, state, "stale_history",
+                            f"Statewide data ends {fc['as_of_date']} ({age} days ago); not forecasting from data that old. "
+                            "Refresh app/data/state_prices.csv.")
+    fc["warnings"] = [w for w in fc["warnings"] if not w.startswith(("historical_replay", "market_not_in_training_data"))]
+    t = arts.meta["metrics"]["test"]
+    pc = arts.meta["metrics"].get("per_crop_test", {}).get(crop)
+    return {
+        "crop": crop, "state": state, "available": True, "forecast": fc, "data_age_days": age,
+        "model": {
+            "family": arts.meta.get("model_family"), "trained_utc": arts.meta["created_utc"],
+            "dataset": arts.meta["dataset"], "data_date_range": arts.meta["data_date_range"],
+            "test_mae_inr_per_quintal": round(t["model"]["mae"], 2),
+            "persistence_baseline_test_mae": round(t["baseline_persistence"]["mae"], 2),
+            "ma7_baseline_test_mae": round(t["baseline_ma7"]["mae"], 2),
+            "beats_persistence_on_test": bool(t.get("model_beats_persistence")),
+            "interval_coverage_test": t.get("interval_coverage_80"),
+            "this_crop_test": ({"rows": pc["rows"], "model_mae": round(pc["model_mae"], 2),
+                                "persistence_mae": round(pc["persistence_mae"], 2)} if pc else None),
+            "evaluated_on": "chronological held-out test split (last ~15% of dates), statewide series",
         },
     }
 
@@ -86,9 +144,34 @@ def ml_status():
     except inf.ForecastError as e:
         return {"available": False, "reason": e.code, "message": e.message}
     return {"available": True, "horizon_days": m["horizon_days"], "unit": m["unit"],
-            "crops": sorted(m["commodity_idx"]), "known_markets": m["known_markets"],
+            "model_family": m.get("model_family"), "model_label": m.get("model_label"),
+            "crops": sorted(m["commodity_idx"]), "excluded_crops": m.get("excluded_crops", {}),
+            "known_markets": m["known_markets"],
             "dataset": m["dataset"], "data_date_range": m["data_date_range"],
-            "split": m["split"], "metrics": m["metrics"], "created_utc": m["created_utc"]}
+            "split": m["split"], "metrics": m["metrics"], "interval": m.get("interval"),
+            "selection": m.get("selection"), "created_utc": m["created_utc"]}
+
+
+@router.get("/analysis")
+def ml_analysis():
+    """Everything the frontend 'model analysis' panel needs, precomputed at training time on the
+    held-out TEST split (dates the model never saw). Nothing is recomputed per request."""
+    inf = _service()
+    if inf is None:
+        return {"available": False, "reason": "ml_dependencies_missing",
+                "message": "pip install -r requirements-ml.txt"}
+    try:
+        arts = inf.load_artifacts()
+    except inf.ForecastError as e:
+        return {"available": False, "reason": e.code, "message": e.message}
+    path = arts.directory / "analysis.json"
+    if not path.is_file():
+        return {"available": False, "reason": "analysis_missing",
+                "message": "analysis.json not found; retrain with scripts/train_price_forecast.py"}
+    try:
+        return {"available": True, **json.loads(path.read_text(encoding="utf-8"))}
+    except (OSError, ValueError) as e:
+        return {"available": False, "reason": "analysis_invalid", "message": f"Could not read analysis.json: {e}"}
 
 
 @router.get("")
