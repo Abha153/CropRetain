@@ -53,7 +53,7 @@ def frame():
 @pytest.fixture(scope="module")
 def artifact_dir(frame, tmp_path_factory):
     out = tmp_path_factory.mktemp("artifacts")
-    T.train_from_frame(frame, out, max_iter=30, min_train_rows=200, min_leaf=20)
+    T.train_from_frame(frame, out, max_iter=30, min_train_rows=200, min_leaf=20, min_heldout_rows=1)
     return out
 
 
@@ -233,3 +233,95 @@ def test_dd_mm_yyyy_dates_from_live_rows_are_accepted(frame, artifact_dir):
         h["date"] = dt.date.fromisoformat(h["date"]).strftime("%d/%m/%Y")
     today = dt.datetime.strptime(hist[-1]["date"], "%d/%m/%Y").date()
     assert "predicted_price" in inf.predict(hist, "Tomato", "Bilaspur", today=today, artifacts=arts)
+
+
+# ---------------- crop support, band calibration, analysis, model selection ----------------
+def test_crops_without_heldout_rows_are_excluded_and_refused(frame, tmp_path):
+    """A crop whose accuracy cannot be measured (no validation/test rows) must not be forecast."""
+    cutoff = frame["date"].min() + (frame["date"].max() - frame["date"].min()) * 0.4
+    f = frame[~((frame.crop == "Wheat") & (frame.date > cutoff))]     # Wheat only exists early
+    T.train_from_frame(f, tmp_path, max_iter=20, min_train_rows=200, min_leaf=20, min_heldout_rows=20)
+    meta = json.loads((tmp_path / "metadata.json").read_text())
+    assert set(meta["commodity_idx"]) == {"Tomato", "Onion"}
+    assert "Wheat" in meta["excluded_crops"]
+    assert meta["excluded_crops"]["Wheat"]["val_rows"] < 20 and "cannot be measured" in meta["excluded_crops"]["Wheat"]["reason"]
+    arts = inf.load_artifacts(tmp_path)
+    hist = _history(frame, crop="Wheat")
+    today = dt.date.fromisoformat(hist[-1]["date"])
+    with pytest.raises(inf.ForecastError) as e:
+        inf.predict(hist, "Wheat", "Bilaspur", today=today, artifacts=arts)
+    assert e.value.code == "unsupported_crop" and "left out on purpose" in e.value.message
+
+
+def test_interval_calibration_reaches_nominal_coverage_on_validation():
+    class _Const:
+        def __init__(self, v): self.v = v
+        def predict(self, X): return np.full(len(X), self.v)
+    rng = np.random.default_rng(3)
+    y = rng.normal(0, 0.05, 2000)                       # outcomes far wider than the raw +/-1% band
+    val = pd.DataFrame({"y": y})
+    X = pd.DataFrame({"a": np.zeros(len(y))})
+    models = {"point": _Const(0.0), "q10": _Const(-0.01), "q90": _Const(0.01)}
+    pad = T.calibrate_interval_pad(models, val, X, target=0.8)
+    assert pad > 0
+    inside = np.mean((y >= -0.01 - pad) & (y <= 0.01 + pad))
+    assert 0.80 <= inside < 0.83                          # conformal guarantee: >= nominal, and not wildly wider
+    # a band that is already too wide gets narrowed (negative pad)
+    wide = {"point": _Const(0.0), "q10": _Const(-0.5), "q90": _Const(0.5)}
+    assert T.calibrate_interval_pad(wide, val, X, target=0.8) < 0
+
+
+def test_band_pad_is_saved_and_applied_at_inference(frame, artifact_dir):
+    meta = json.loads((artifact_dir / "metadata.json").read_text())
+    assert np.isfinite(meta["interval"]["log_pad"]) and meta["interval"]["nominal"] == 0.8
+    arts = inf.load_artifacts(artifact_dir)
+    hist = _history(frame)
+    today = dt.date.fromisoformat(hist[-1]["date"])
+    base = inf.predict(hist, "Tomato", "Bilaspur", today=today, artifacts=arts)
+    arts.meta["interval"] = {**arts.meta["interval"], "log_pad": arts.meta["interval"]["log_pad"] + 0.2}
+    try:
+        wider = inf.predict(hist, "Tomato", "Bilaspur", today=today, artifacts=arts)
+    finally:
+        arts.meta["interval"]["log_pad"] -= 0.2
+    assert wider["predicted_price_high"] > base["predicted_price_high"]
+    assert wider["predicted_price_low"] < base["predicted_price_low"]
+    assert wider["predicted_price"] == base["predicted_price"]          # point forecast untouched
+
+
+def _no_nan(x):
+    raise ValueError(f"non-finite constant {x} in analysis.json")
+
+
+def test_analysis_json_is_strict_json_and_matches_metadata(artifact_dir):
+    raw = (artifact_dir / "analysis.json").read_text()
+    a = json.loads(raw, parse_constant=_no_nan)
+    meta = json.loads((artifact_dir / "metadata.json").read_text())
+    for k in ("model", "selection", "data", "overall", "candidates", "per_crop_test", "per_state_test",
+              "weekly_test", "error_buckets_test", "scatter_test", "feature_importance", "plain_language"):
+        assert k in a
+    assert set(a["per_crop_test"]) <= set(meta["commodity_idx"])
+    assert sum(v["rows"] for v in a["per_crop_test"].values()) == a["overall"]["test"]["rows"]
+    assert a["overall"]["test"]["model"]["mae"] == pytest.approx(meta["metrics"]["test"]["model"]["mae"], abs=1e-3)
+    assert {r["feature"] for r in a["feature_importance"]["ranking"]} == set(F.FEATURE_COLS)
+    assert abs(sum(r["share"] for r in a["feature_importance"]["ranking"]) - 1.0) < 1e-4   # values stored to 6 dp
+    b = {x["label"]: x for x in a["error_buckets_test"]}
+    assert b["within 5%"]["model"] <= b["within 10%"]["model"] <= b["within 20%"]["model"]
+    assert abs(b["within 20%"]["model"] + b["off by more than 20%"]["model"] - 1.0) < 1e-6
+    assert all(set(p) == {"actual", "predicted", "crop"} for p in a["scatter_test"])
+
+
+def test_model_choice_never_looks_at_the_test_split(frame, tmp_path):
+    pytest.importorskip("catboost")
+    meta = T.train_from_frame(frame, tmp_path, max_iter=30, min_train_rows=200, min_leaf=20,
+                              min_heldout_rows=1, families=("hgb", "catboost"))
+    sel = meta["selection"]
+    assert sel["test_split_used_for_selection"] is False
+    v = sel["validation_mae"]
+    expect = "catboost" if v["catboost"] < v["hgb"] * (1 - T.SELECTION_MARGIN) else "hgb"
+    assert sel["chosen"] == meta["model_family"] == expect
+    assert set(meta["metrics"]["candidates"]) == {"hgb", "catboost"}
+    arts = inf.load_artifacts(tmp_path)                  # the winner (whichever it is) must serve a forecast
+    hist = _history(frame)
+    today = dt.date.fromisoformat(hist[-1]["date"])
+    out = inf.predict(hist, "Tomato", "Bilaspur", today=today, artifacts=arts)
+    assert out["predicted_price_low"] <= out["predicted_price"] <= out["predicted_price_high"]

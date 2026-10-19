@@ -6,6 +6,8 @@ import { useAuth } from '../context/AuthContext'
 import { resolveDefaultLocation } from '../utils/location'
 import { useTheme } from '../context/ThemeContext'
 import LoadingSpinner from '../components/LoadingSpinner'
+import MlAnalysis from '../components/MlAnalysis'
+import PastPrices from '../components/PastPrices'
 import { useI18n } from '../i18n/I18nContext'
 
 const CROP_KEY_MAP = {
@@ -291,7 +293,11 @@ export default function PriceForecast() {
         </>
       )}
 
+      <PastPrices crop={crop} market={market} cropLabel={getLocalizedCropName(crop, t)} />
+
       {!loading && ml && <MlPanel ml={ml} currentKg={ok ? current : null} />}
+      {/* Fetched once, independent of the crop/market form; it only highlights the selected crop. */}
+      <MlAnalysis crop={crop} />
     </div>
   )
 }

@@ -7,7 +7,8 @@ safely.
 Artifact directory (override with env PRICE_FORECAST_ARTIFACT_DIR):
     <backend>/models/price_forecast/
         bundle.joblib       {"point": model, "q10": model, "q90": model}
-        metadata.json       feature list, vocabularies, metrics, split dates, versions
+        metadata.json       feature list, vocabularies, metrics, split dates, versions, band calibration
+        analysis.json       precomputed held-out-test analysis served by /forecast/ml/analysis
         recent_history.csv  columns crop,market,date,modal_price (demo replay only)
 """
 from __future__ import annotations
@@ -112,7 +113,12 @@ def predict(history: list, crop: str, market: Optional[str] = None, *,
     meta = arts.meta
     cidx = meta["commodity_idx"].get(crop)
     if cidx is None:
-        raise ForecastError("unsupported_crop", f"No trained model coverage for crop '{crop}'.")
+        why = (meta.get("excluded_crops") or {}).get(crop)
+        raise ForecastError(
+            "unsupported_crop",
+            f"No trained model coverage for crop '{crop}'."
+            + (f" It was left out on purpose: {why['reason']} "
+               f"(train/val/test rows: {why['train_rows']}/{why['val_rows']}/{why['test_rows']})." if why else ""))
 
     if not history:
         raise ForecastError("insufficient_history", "No price history available.")
@@ -144,8 +150,9 @@ def predict(history: list, crop: str, market: Optional[str] = None, *,
     X["commodity_idx"] = X["commodity_idx"].astype(int)
     clip = lambda v: float(np.clip(v, -F.MAX_ABS_LOG_RATIO, F.MAX_ABS_LOG_RATIO))
     r_pt = clip(arts.models["point"].predict(X)[0])
-    r_lo = clip(arts.models["q10"].predict(X)[0])
-    r_hi = clip(arts.models["q90"].predict(X)[0])
+    pad = float(meta.get("interval", {}).get("log_pad", 0.0) or 0.0)   # validation-fitted band calibration
+    r_lo = clip(arts.models["q10"].predict(X)[0] - pad)
+    r_hi = clip(arts.models["q90"].predict(X)[0] + pad)
     r_lo, r_hi = min(r_lo, r_pt), max(r_hi, r_pt)   # quantile crossing guard
     price = float(last["price"])
     pred, lo, hi = (price * math.exp(r) for r in (r_pt, r_lo, r_hi))
@@ -169,7 +176,7 @@ def predict(history: list, crop: str, market: Optional[str] = None, *,
         "as_of_date": as_of.isoformat(), "target_date": target_date.isoformat(),
         "last_observed_price": r2(price),
         "predicted_price": r2(pred), "predicted_price_low": r2(lo), "predicted_price_high": r2(hi),
-        "interval": "approx. 80% (q10-q90 quantile models)",
+        "interval": "approx. 80% (q10-q90 quantile models, calibrated on held-out validation data)",
         "predicted_price_per_kg": r2(pred / 100.0),
         "baseline_persistence_price": r2(price),
         "observations_used": int(len(s)), "obs_last_28_days": int(last["n_obs_28"]),

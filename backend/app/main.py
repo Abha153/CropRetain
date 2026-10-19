@@ -19,6 +19,7 @@ from app.routers import offer_negotiation
 from app.routers import transporters, transport_negotiation
 from app.routers import trust
 from app.routers import price_forecast_ml
+from app.routers import past_prices
 from app.routers import soil
 
 Base.metadata.create_all(bind=engine)
@@ -130,6 +131,7 @@ app.include_router(listings.router)
 app.include_router(offers.router)
 app.include_router(offer_negotiation.router)  # after offers.router: static /offers/* paths must win
 app.include_router(market.router)
+app.include_router(past_prices.router)
 app.include_router(advisor.router)
 app.include_router(forecast.router)
 app.include_router(price_forecast_ml.router)
