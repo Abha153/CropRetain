@@ -13,3 +13,9 @@ python-dotenv==1.0.1
 Pillow==10.4.0
 httpx==0.27.2
 pytest==8.3.3
+# ML price forecast runtime (inference only; training extras are in requirements-ml.txt / requirements-train.txt).
+# scikit-learn is pinned to the version the bundled models in backend/models/ were trained with.
+numpy>=1.26
+pandas>=2.1
+scikit-learn==1.9.1
+joblib>=1.3
