@@ -1,0 +1,540 @@
+diff --git a/frontend/src/components/Layout.jsx b/frontend/src/components/Layout.jsx
+index d8c4b3b..c460ac1 100644
+--- a/frontend/src/components/Layout.jsx
++++ b/frontend/src/components/Layout.jsx
+@@ -70,6 +70,7 @@ function useNavGroups(role, t) {
+       heading: t('navOverview'),
+       links: [
+         { to: '/farmer/dashboard', label: t('navDashboard'), Icon: Home },
++        { to: '/soil-advisor', label: t('navSoil'), Icon: Sprout },
+         { to: '/market-intelligence', label: t('navMarket'), Icon: BarChart3 },
+         { to: '/forecast', label: t('navForecast'), Icon: TrendingUp },
+         { to: '/arrivals', label: t('navArrival'), Icon: Package },
+@@ -88,7 +89,6 @@ function useNavGroups(role, t) {
+     {
+       heading: t('navDecisionTools'),
+       links: [
+-        { to: '/soil-advisor', label: t('navSoil'), Icon: Sprout },
+         { to: '/profit-calculator', label: t('navProfit'), Icon: Calculator },
+         { to: '/transport', label: t('navTransport'), Icon: Truck },
+         { to: '/farmpool', label: t('navFarmPool'), Icon: Users },
+@@ -210,7 +210,7 @@ export default function Layout({ children }) {
+           {children}
+         </main>
+       </div>
+-      <nav className="md:hidden fixed bottom-0 inset-x-0 z-20 bg-white/95 backdrop-blur border-t border-black/8 grid grid-cols-5 px-2 py-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]" aria-label={t('layout.mobileNavigation')}>
++      <nav className="md:hidden fixed bottom-0 inset-x-0 z-20 bg-white/95 backdrop-blur border-t border-black/8 grid px-1 py-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]" aria-label={t('layout.mobileNavigation')} style={{ gridTemplateColumns: `repeat(${role === 'buyer' ? 5 : 6}, minmax(0, 1fr))` }}>
+         {(role === 'buyer'
+           ? [
+               { to: '/buyer/dashboard', label: t('navDashboard'), Icon: Home },
+@@ -221,6 +221,7 @@ export default function Layout({ children }) {
+             ]
+           : [
+               { to: '/farmer/dashboard', label: t('navDashboard'), Icon: Home },
++              { to: '/soil-advisor', label: t('navSoil'), Icon: Sprout },
+               { to: '/market-intelligence', label: t('navMarket'), Icon: BarChart3 },
+               { to: '/best-option', label: t('navBestOption'), Icon: Target },
+               { to: '/ask', label: t('navAsk'), Icon: MessageCircle },
+@@ -230,12 +231,12 @@ export default function Layout({ children }) {
+           <NavLink
+             key={to}
+             to={to}
+-            className={({ isActive }) => `flex flex-col items-center gap-1 py-1 text-[10px] font-semibold ${isActive ? 'text-forest dark:text-marigold' : 'text-ink/50 dark:text-paper/50'}`}
++            className={({ isActive }) => `flex flex-col items-center gap-1 py-1 text-[10px] font-semibold min-w-0 ${isActive ? 'text-forest dark:text-marigold' : 'text-ink/50 dark:text-paper/50'}`}
+           >
+             {({ isActive }) => (
+               <>
+                 <Icon size={18} strokeWidth={isActive ? 2.5 : 2} />
+-                <span>{label}</span>
++                <span className="max-w-full truncate">{label}</span>
+               </>
+             )}
+           </NavLink>
+diff --git a/frontend/src/i18n/translations/as.json b/frontend/src/i18n/translations/as.json
+index 5085b5c..1f0d33e 100644
+--- a/frontend/src/i18n/translations/as.json
++++ b/frontend/src/i18n/translations/as.json
+@@ -1555,5 +1555,20 @@
+   "soil.sources": "সূত্ৰ",
+   "soil.limits": "এয়া কেৱল প্ৰাথমিক পৰীক্ষা। ই প্ৰকাশিত নিৰ্দেশনাৰ ওপৰত আধাৰিত, যি ছত্তিশগড় বা আপোনাৰ জিলাৰ বাবে নিৰ্দিষ্ট নহয়, আৰু ই মাটি পৰীক্ষা নহয়। ই ফটো বা ছেন্সৰ ব্যৱহাৰ নকৰে আৰু পুষ্টিকৰ উপাদান বা লৱণতা পৰীক্ষা নকৰে। মৃত্তিকা স্বাস্থ্য কাৰ্ড বা স্থানীয় KVK ৰ পৰা নিশ্চিত কৰক।",
+   "soil.noneMatched": "পৰীক্ষা কৰা কোনো শস্যই আপোনাৰ সকলো তথ্যৰ লগত নিমিলিল।",
+-  "soil.needInput": "অতি কমেও এটা দিয়ক: pH, গঠন বা ঋতু।"
++  "soil.needInput": "অতি কমেও এটা দিয়ক: pH, গঠন বা ঋতু।",
++  "landing.farmJourneyHeading": "মাটিৰ পৰা বজাৰলৈ",
++  "landing.farmJourneySubtitle": "আপোনাৰ মাটিৰ বাবে কোনবোৰ শস্য উপযুক্ত চাওক, ঋতুৰ পৰিকল্পনা কৰক আৰু আপোনাৰ শস্য আটাইতকৈ ভাল বজাৰলৈ লৈ যাওক।",
++  "landing.comingSoon": "সোনকালেই আহিব",
++  "landing.journey.soil.title": "মাটিৰ তথ্য",
++  "landing.journey.soil.desc": "বিদ্যমান মাটি পৰামৰ্শদাতাৰে আপোনাৰ মাটিৰ pH, গঠন, ঋতু আৰু পানী অনুসৰি শস্য পৰীক্ষা কৰক।",
++  "landing.journey.farm.title": "পথাৰ প্ৰফাইল",
++  "landing.journey.farm.desc": "আপোনাৰ পথাৰ, প্লট আৰু মাটি পৰীক্ষা এক ঠাইত সংৰক্ষণ কৰক।",
++  "landing.journey.plan.title": "শস্য পৰিকল্পনা",
++  "landing.journey.plan.desc": "সংৰক্ষিত মাটি পৰীক্ষাৰ ভিত্তিত শস্য আৰু প্ৰত্যাশিত উৎপাদনৰ পৰিকল্পনা কৰক।",
++  "landing.journey.harvest.title": "শস্যৰ পৰা বজাৰলৈ",
++  "landing.journey.harvest.desc": "আপোনাৰ শস্য যোগ কৰক, বজাৰ তুলনা কৰক, তাৰ পিছত ক্ৰেতা, পৰিবহণ আৰু পেমেণ্টলৈ আগবাঢ়ক।",
++  "dashboard.farmHealthTitle": "পথাৰৰ স্বাস্থ্য আৰু মাটি",
++  "dashboard.farmHealthEmpty": "এতিয়ালৈকে কোনো মাটি পৰীক্ষা সংৰক্ষণ কৰা হোৱা নাই। আপোনাৰ মাটিৰ বাবে কোনবোৰ শস্য উপযুক্ত চাবলৈ মাটি পৰামৰ্শদাতা খোলক।",
++  "dashboard.farmHealthSensors": "মাটি ছেন্সৰ: সংযুক্ত হোৱা নাই।",
++  "dashboard.farmHealthCta": "মাটি পৰামৰ্শদাতা খোলক"
+ }
+diff --git a/frontend/src/i18n/translations/bho.json b/frontend/src/i18n/translations/bho.json
+index 8c30d86..863180c 100644
+--- a/frontend/src/i18n/translations/bho.json
++++ b/frontend/src/i18n/translations/bho.json
+@@ -1555,5 +1555,20 @@
+   "soil.sources": "स्रोत",
+   "soil.limits": "ई खाली शुरुआती जाँच ह। ई छपल मार्गदर्शन पर टिकल बा जे छत्तीसगढ़ भा रउरा जिला खातिर खास नइखे, आ ई माटी जाँच ना ह। ई फोटो भा सेंसर ना इस्तेमाल करेला आ पोषक तत्व भा खारापन ना जाँचेला। सॉइल हेल्थ कार्ड भा अपना इलाका के केवीके से पक्का क लीं।",
+   "soil.noneMatched": "जाँचल कवनो फसल रउरा सब जानकारी से मेल ना खाइल।",
+-  "soil.needInput": "कम से कम एगो दीं: pH, बनावट भा मौसम।"
++  "soil.needInput": "कम से कम एगो दीं: pH, बनावट भा मौसम।",
++  "landing.farmJourneyHeading": "माटी से बाजार तक",
++  "landing.farmJourneySubtitle": "देखीं कि रउरा माटी खातिर कवन फसल ठीक बा, मौसम के योजना बनाईं आ आपन उपज सबसे बढ़िया बाजार ले पहुँचाईं।",
++  "landing.comingSoon": "जल्दिए आ रहल बा",
++  "landing.journey.soil.title": "माटी के जानकारी",
++  "landing.journey.soil.desc": "मौजूदा माटी सलाहकार से आपन माटी के pH, बनावट, मौसम आ पानी के हिसाब से फसल जाँचीं।",
++  "landing.journey.farm.title": "खेत प्रोफाइल",
++  "landing.journey.farm.desc": "आपन खेत, प्लॉट आ माटी के जाँच एके जगह सहेजीं।",
++  "landing.journey.plan.title": "फसल योजना",
++  "landing.journey.plan.desc": "सहेजल माटी जाँच के आधार पर फसल आ अनुमानित उपज के योजना बनाईं।",
++  "landing.journey.harvest.title": "उपज से बाजार तक",
++  "landing.journey.harvest.desc": "आपन उपज जोड़ीं, बाजार सभ के तुलना करीं आ फेर खरीदार, ढुलाई आ भुगतान पर आगे बढ़ीं।",
++  "dashboard.farmHealthTitle": "खेत के सेहत आ माटी",
++  "dashboard.farmHealthEmpty": "अबहीं ले कवनो माटी जाँच सहेजल नइखे। आपन माटी खातिर ठीक फसल देखे खातिर माटी सलाहकार खोलीं।",
++  "dashboard.farmHealthSensors": "माटी सेंसर: जुड़ल नइखे।",
++  "dashboard.farmHealthCta": "माटी सलाहकार खोलीं"
+ }
+diff --git a/frontend/src/i18n/translations/bn.json b/frontend/src/i18n/translations/bn.json
+index bf39071..e0fb7d1 100644
+--- a/frontend/src/i18n/translations/bn.json
++++ b/frontend/src/i18n/translations/bn.json
+@@ -1555,5 +1555,20 @@
+   "soil.sources": "সূত্র",
+   "soil.limits": "এটি শুধু প্রাথমিক যাচাই। এটি প্রকাশিত নির্দেশিকার ওপর ভিত্তি করে, যা ছত্তিশগড় বা আপনার জেলার জন্য নির্দিষ্ট নয়, এবং এটি মাটি পরীক্ষা নয়। এটি ছবি বা সেন্সর ব্যবহার করে না এবং পুষ্টি বা লবণাক্ততা যাচাই করে না। সয়েল হেলথ কার্ড বা স্থানীয় কেভিকে-র সঙ্গে নিশ্চিত করুন।",
+   "soil.noneMatched": "যাচাই করা কোনো ফসলই আপনার সব তথ্যের সঙ্গে মেলেনি।",
+-  "soil.needInput": "অন্তত একটি দিন: pH, গঠন বা মরসুম।"
++  "soil.needInput": "অন্তত একটি দিন: pH, গঠন বা মরসুম।",
++  "landing.farmJourneyHeading": "মাটি থেকে বাজার পর্যন্ত",
++  "landing.farmJourneySubtitle": "আপনার মাটির জন্য কোন ফসল উপযুক্ত তা দেখুন, মৌসুমের পরিকল্পনা করুন এবং ফসল সেরা বাজারে নিয়ে যান।",
++  "landing.comingSoon": "শীঘ্রই আসছে",
++  "landing.journey.soil.title": "মাটির তথ্য",
++  "landing.journey.soil.desc": "বিদ্যমান মাটি পরামর্শদাতা দিয়ে আপনার মাটির pH, গঠন, মৌসুম ও জল অনুযায়ী ফসল যাচাই করুন।",
++  "landing.journey.farm.title": "খামার প্রোফাইল",
++  "landing.journey.farm.desc": "আপনার খামার, প্লট ও মাটি পরীক্ষা এক জায়গায় সংরক্ষণ করুন।",
++  "landing.journey.plan.title": "ফসল পরিকল্পনা",
++  "landing.journey.plan.desc": "সংরক্ষিত মাটি পরীক্ষার ভিত্তিতে ফসল ও প্রত্যাশিত উৎপাদনের পরিকল্পনা করুন।",
++  "landing.journey.harvest.title": "ফসল থেকে বাজার",
++  "landing.journey.harvest.desc": "আপনার ফসল যোগ করুন, বাজার তুলনা করুন, তারপর ক্রেতা, পরিবহন ও পেমেন্টে এগিয়ে যান।",
++  "dashboard.farmHealthTitle": "খামারের স্বাস্থ্য ও মাটি",
++  "dashboard.farmHealthEmpty": "এখনও কোনো মাটি পরীক্ষা সংরক্ষিত হয়নি। আপনার মাটির জন্য কোন ফসল উপযুক্ত তা দেখতে মাটি পরামর্শদাতা খুলুন।",
++  "dashboard.farmHealthSensors": "মাটি সেন্সর: সংযুক্ত নয়।",
++  "dashboard.farmHealthCta": "মাটি পরামর্শদাতা খুলুন"
+ }
+diff --git a/frontend/src/i18n/translations/en.json b/frontend/src/i18n/translations/en.json
+index 8540197..06d5ad6 100644
+--- a/frontend/src/i18n/translations/en.json
++++ b/frontend/src/i18n/translations/en.json
+@@ -1555,5 +1555,20 @@
+   "soil.sources": "Sources",
+   "soil.limits": "Screening aid only. It uses published guidance that is not specific to Chhattisgarh or your district, not a soil test. It does not use photos or sensors and does not check nutrients or salinity. Confirm with a Soil Health Card or your local KVK.",
+   "soil.noneMatched": "None of the assessed crops matched all your inputs.",
+-  "soil.needInput": "Enter at least one of pH, texture or season."
++  "soil.needInput": "Enter at least one of pH, texture or season.",
++  "landing.farmJourneyHeading": "From soil to market",
++  "landing.farmJourneySubtitle": "Check what suits your soil, plan the season, and take your harvest to the best market.",
++  "landing.comingSoon": "Coming soon",
++  "landing.journey.soil.title": "Soil Intelligence",
++  "landing.journey.soil.desc": "Screen crops against your soil pH, texture, season and water using the existing Soil Advisor.",
++  "landing.journey.farm.title": "Farm Profile",
++  "landing.journey.farm.desc": "Save your farm, plots and soil tests in one place.",
++  "landing.journey.plan.title": "Crop Planning",
++  "landing.journey.plan.desc": "Plan crops and expected harvest from your saved soil tests.",
++  "landing.journey.harvest.title": "Harvest-to-Market",
++  "landing.journey.harvest.desc": "Add your produce, compare markets and move on to buyers, transport and payment.",
++  "dashboard.farmHealthTitle": "Farm Health & Soil",
++  "dashboard.farmHealthEmpty": "No soil test saved yet. Use the Soil Advisor to check which crops suit your soil.",
++  "dashboard.farmHealthSensors": "Soil sensors: not connected.",
++  "dashboard.farmHealthCta": "Open Soil Advisor"
+ }
+diff --git a/frontend/src/i18n/translations/gu.json b/frontend/src/i18n/translations/gu.json
+index b2f04d2..25fb880 100644
+--- a/frontend/src/i18n/translations/gu.json
++++ b/frontend/src/i18n/translations/gu.json
+@@ -1555,5 +1555,20 @@
+   "soil.sources": "સ્ત્રોતો",
+   "soil.limits": "આ માત્ર પ્રાથમિક તપાસ છે. તે પ્રકાશિત માર્ગદર્શન પર આધારિત છે જે છત્તીસગઢ કે તમારા જિલ્લા માટે વિશિષ્ટ નથી, અને તે માટી પરીક્ષણ નથી. તે ફોટા કે સેન્સરનો ઉપયોગ કરતું નથી અને પોષકતત્ત્વો કે ક્ષારતા તપાસતું નથી. સોઇલ હેલ્થ કાર્ડ કે સ્થાનિક KVK પાસે ખાતરી કરો.",
+   "soil.noneMatched": "તપાસેલા કોઈ પાક તમારી બધી માહિતી સાથે મેળ ખાતા નથી.",
+-  "soil.needInput": "ઓછામાં ઓછું એક દાખલ કરો: pH, બનાવટ અથવા ઋતુ."
++  "soil.needInput": "ઓછામાં ઓછું એક દાખલ કરો: pH, બનાવટ અથવા ઋતુ.",
++  "landing.farmJourneyHeading": "માટીથી બજાર સુધી",
++  "landing.farmJourneySubtitle": "તમારી માટીને કયા પાક અનુકૂળ છે તે તપાસો, સીઝનનું આયોજન કરો અને તમારી ઉપજને શ્રેષ્ઠ બજારમાં લઈ જાઓ.",
++  "landing.comingSoon": "ટૂંક સમયમાં આવી રહ્યું છે",
++  "landing.journey.soil.title": "માટીની માહિતી",
++  "landing.journey.soil.desc": "હાલના માટી સલાહકાર દ્વારા તમારી માટીના pH, બંધારણ, સીઝન અને પાણી મુજબ પાક તપાસો.",
++  "landing.journey.farm.title": "ખેતર પ્રોફાઇલ",
++  "landing.journey.farm.desc": "તમારું ખેતર, પ્લોટ અને માટી પરીક્ષણ એક જ જગ્યાએ સાચવો.",
++  "landing.journey.plan.title": "પાક આયોજન",
++  "landing.journey.plan.desc": "સાચવેલા માટી પરીક્ષણોના આધારે પાક અને અપેક્ષિત ઉપજનું આયોજન કરો.",
++  "landing.journey.harvest.title": "ઉપજથી બજાર સુધી",
++  "landing.journey.harvest.desc": "તમારી ઉપજ ઉમેરો, બજારોની સરખામણી કરો અને પછી ખરીદદારો, પરિવહન અને ચુકવણી તરફ આગળ વધો.",
++  "dashboard.farmHealthTitle": "ખેતરનું સ્વાસ્થ્ય અને માટી",
++  "dashboard.farmHealthEmpty": "હજી સુધી કોઈ માટી પરીક્ષણ સાચવ્યું નથી. તમારી માટીને કયા પાક અનુકૂળ છે તે જોવા માટે માટી સલાહકાર ખોલો.",
++  "dashboard.farmHealthSensors": "માટી સેન્સર: જોડાયેલા નથી.",
++  "dashboard.farmHealthCta": "માટી સલાહકાર ખોલો"
+ }
+diff --git a/frontend/src/i18n/translations/hi.json b/frontend/src/i18n/translations/hi.json
+index 0ed89f2..daf02db 100644
+--- a/frontend/src/i18n/translations/hi.json
++++ b/frontend/src/i18n/translations/hi.json
+@@ -1555,5 +1555,20 @@
+   "soil.sources": "स्रोत",
+   "soil.limits": "यह केवल प्रारंभिक जाँच है। यह प्रकाशित मार्गदर्शन पर आधारित है जो छत्तीसगढ़ या आपके ज़िले के लिए विशिष्ट नहीं है, और मिट्टी परीक्षण नहीं है। यह फ़ोटो या सेंसर का उपयोग नहीं करता और पोषक तत्व या लवणता नहीं जाँचता। सॉइल हेल्थ कार्ड या अपने स्थानीय केवीके से पुष्टि करें।",
+   "soil.noneMatched": "आकलन की गई कोई भी फसल आपकी सभी जानकारी से मेल नहीं खाई।",
+-  "soil.needInput": "कम से कम एक चुनें: pH, बनावट या मौसम।"
++  "soil.needInput": "कम से कम एक चुनें: pH, बनावट या मौसम।",
++  "landing.farmJourneyHeading": "मिट्टी से बाज़ार तक",
++  "landing.farmJourneySubtitle": "जानें कि आपकी मिट्टी के लिए कौन-सी फ़सलें ठीक हैं, सीज़न की योजना बनाएँ और अपनी उपज को सबसे अच्छे बाज़ार तक पहुँचाएँ।",
++  "landing.comingSoon": "जल्द आ रहा है",
++  "landing.journey.soil.title": "मिट्टी की जानकारी",
++  "landing.journey.soil.desc": "मौजूदा मिट्टी सलाहकार से अपनी मिट्टी के pH, बनावट, मौसम और पानी के अनुसार फ़सलें जाँचें।",
++  "landing.journey.farm.title": "खेत प्रोफ़ाइल",
++  "landing.journey.farm.desc": "अपना खेत, प्लॉट और मिट्टी की जाँच एक ही जगह सहेजें।",
++  "landing.journey.plan.title": "फ़सल योजना",
++  "landing.journey.plan.desc": "सहेजी गई मिट्टी जाँच के आधार पर फ़सल और अनुमानित उपज की योजना बनाएँ।",
++  "landing.journey.harvest.title": "उपज से बाज़ार तक",
++  "landing.journey.harvest.desc": "अपनी उपज जोड़ें, बाज़ारों की तुलना करें और फिर खरीदार, परिवहन और भुगतान पर आगे बढ़ें।",
++  "dashboard.farmHealthTitle": "खेत की सेहत और मिट्टी",
++  "dashboard.farmHealthEmpty": "अभी तक कोई मिट्टी जाँच सहेजी नहीं गई है। अपनी मिट्टी के लिए उपयुक्त फ़सलें देखने हेतु मिट्टी सलाहकार खोलें।",
++  "dashboard.farmHealthSensors": "मिट्टी सेंसर: जुड़े नहीं हैं।",
++  "dashboard.farmHealthCta": "मिट्टी सलाहकार खोलें"
+ }
+diff --git a/frontend/src/i18n/translations/kn.json b/frontend/src/i18n/translations/kn.json
+index 2f2aa9a..87f5155 100644
+--- a/frontend/src/i18n/translations/kn.json
++++ b/frontend/src/i18n/translations/kn.json
+@@ -1555,5 +1555,20 @@
+   "soil.sources": "ಮೂಲಗಳು",
+   "soil.limits": "ಇದು ಪ್ರಾಥಮಿಕ ಪರಿಶೀಲನೆ ಮಾತ್ರ. ಇದು ಪ್ರಕಟಿತ ಮಾರ್ಗದರ್ಶನವನ್ನು ಆಧರಿಸಿದೆ, ಅದು ಛತ್ತೀಸ್‌ಗಢ ಅಥವಾ ನಿಮ್ಮ ಜಿಲ್ಲೆಗೆ ವಿಶಿಷ್ಟವಲ್ಲ; ಇದು ಮಣ್ಣು ಪರೀಕ್ಷೆ ಅಲ್ಲ. ಫೋಟೋ ಅಥವಾ ಸೆನ್ಸರ್ ಬಳಸುವುದಿಲ್ಲ, ಪೋಷಕಾಂಶ ಅಥವಾ ಲವಣತೆಯನ್ನು ಪರಿಶೀಲಿಸುವುದಿಲ್ಲ. ಮಣ್ಣು ಆರೋಗ್ಯ ಕಾರ್ಡ್ ಅಥವಾ ಸ್ಥಳೀಯ KVK ಯಿಂದ ಖಚಿತಪಡಿಸಿಕೊಳ್ಳಿ.",
+   "soil.noneMatched": "ಪರಿಶೀಲಿಸಿದ ಯಾವುದೇ ಬೆಳೆ ನಿಮ್ಮ ಎಲ್ಲ ಮಾಹಿತಿಗೆ ಹೊಂದಿಕೆಯಾಗಲಿಲ್ಲ.",
+-  "soil.needInput": "ಕನಿಷ್ಠ ಒಂದನ್ನು ನೀಡಿ: pH, ರಚನೆ ಅಥವಾ ಹಂಗಾಮು."
+-}
+\ No newline at end of file
++  "soil.needInput": "ಕನಿಷ್ಠ ಒಂದನ್ನು ನೀಡಿ: pH, ರಚನೆ ಅಥವಾ ಹಂಗಾಮು.",
++  "landing.farmJourneyHeading": "ಮಣ್ಣಿನಿಂದ ಮಾರುಕಟ್ಟೆಯವರೆಗೆ",
++  "landing.farmJourneySubtitle": "ನಿಮ್ಮ ಮಣ್ಣಿಗೆ ಯಾವ ಬೆಳೆಗಳು ಸೂಕ್ತ ಎಂಬುದನ್ನು ಪರಿಶೀಲಿಸಿ, ಋತುವಿನ ಯೋಜನೆ ಮಾಡಿ ಮತ್ತು ನಿಮ್ಮ ಬೆಳೆಯನ್ನು ಉತ್ತಮ ಮಾರುಕಟ್ಟೆಗೆ ಕೊಂಡೊಯ್ಯಿರಿ.",
++  "landing.comingSoon": "ಶೀಘ್ರದಲ್ಲೇ ಬರಲಿದೆ",
++  "landing.journey.soil.title": "ಮಣ್ಣಿನ ಮಾಹಿತಿ",
++  "landing.journey.soil.desc": "ಈಗಿರುವ ಮಣ್ಣು ಸಲಹೆಗಾರದ ಮೂಲಕ ನಿಮ್ಮ ಮಣ್ಣಿನ pH, ರಚನೆ, ಋತು ಮತ್ತು ನೀರಿಗೆ ಅನುಗುಣವಾಗಿ ಬೆಳೆಗಳನ್ನು ಪರಿಶೀಲಿಸಿ.",
++  "landing.journey.farm.title": "ಹೊಲದ ಪ್ರೊಫೈಲ್",
++  "landing.journey.farm.desc": "ನಿಮ್ಮ ಹೊಲ, ಪ್ಲಾಟ್‌ಗಳು ಮತ್ತು ಮಣ್ಣು ಪರೀಕ್ಷೆಗಳನ್ನು ಒಂದೇ ಸ್ಥಳದಲ್ಲಿ ಉಳಿಸಿ.",
++  "landing.journey.plan.title": "ಬೆಳೆ ಯೋಜನೆ",
++  "landing.journey.plan.desc": "ಉಳಿಸಿದ ಮಣ್ಣು ಪರೀಕ್ಷೆಗಳ ಆಧಾರದ ಮೇಲೆ ಬೆಳೆಗಳು ಮತ್ತು ನಿರೀಕ್ಷಿತ ಇಳುವರಿಯನ್ನು ಯೋಜಿಸಿ.",
++  "landing.journey.harvest.title": "ಬೆಳೆಯಿಂದ ಮಾರುಕಟ್ಟೆಗೆ",
++  "landing.journey.harvest.desc": "ನಿಮ್ಮ ಬೆಳೆಯನ್ನು ಸೇರಿಸಿ, ಮಾರುಕಟ್ಟೆಗಳನ್ನು ಹೋಲಿಸಿ, ನಂತರ ಖರೀದಿದಾರರು, ಸಾರಿಗೆ ಮತ್ತು ಪಾವತಿಗೆ ಮುಂದುವರಿಯಿರಿ.",
++  "dashboard.farmHealthTitle": "ಹೊಲದ ಆರೋಗ್ಯ ಮತ್ತು ಮಣ್ಣು",
++  "dashboard.farmHealthEmpty": "ಇನ್ನೂ ಯಾವುದೇ ಮಣ್ಣು ಪರೀಕ್ಷೆಯನ್ನು ಉಳಿಸಿಲ್ಲ. ನಿಮ್ಮ ಮಣ್ಣಿಗೆ ಯಾವ ಬೆಳೆಗಳು ಸೂಕ್ತ ಎಂದು ನೋಡಲು ಮಣ್ಣು ಸಲಹೆಗಾರವನ್ನು ತೆರೆಯಿರಿ.",
++  "dashboard.farmHealthSensors": "ಮಣ್ಣಿನ ಸೆನ್ಸರ್‌ಗಳು: ಸಂಪರ್ಕಗೊಂಡಿಲ್ಲ.",
++  "dashboard.farmHealthCta": "ಮಣ್ಣು ಸಲಹೆಗಾರ ತೆರೆಯಿರಿ"
++}
+diff --git a/frontend/src/i18n/translations/mai.json b/frontend/src/i18n/translations/mai.json
+index 8f99586..a87dd0b 100644
+--- a/frontend/src/i18n/translations/mai.json
++++ b/frontend/src/i18n/translations/mai.json
+@@ -1555,5 +1555,20 @@
+   "soil.sources": "स्रोत",
+   "soil.limits": "ई मात्र प्रारंभिक जाँच अछि। ई प्रकाशित मार्गदर्शन पर आधारित अछि जे छत्तीसगढ़ वा अहाँक जिला लेल विशिष्ट नहि अछि, आ ई माटि परीक्षण नहि अछि। ई फोटो वा सेंसरक उपयोग नहि करैत अछि आ पोषक तत्व वा खारापन नहि जाँचैत अछि। सॉइल हेल्थ कार्ड वा स्थानीय केवीके सँ पुष्टि करू।",
+   "soil.noneMatched": "जाँचल कोनो फसल अहाँक सभ जानकारी सँ मेल नहि खेलक।",
+-  "soil.needInput": "कम सँ कम एकटा दिअ: pH, बनावट वा मौसम।"
++  "soil.needInput": "कम सँ कम एकटा दिअ: pH, बनावट वा मौसम।",
++  "landing.farmJourneyHeading": "माटिसँ बजार धरि",
++  "landing.farmJourneySubtitle": "देखू जे अहाँक माटिक लेल कोन फसल उचित अछि, मौसमक योजना बनाउ आ अपन उपजकेँ सभसँ नीक बजार धरि पहुँचाउ।",
++  "landing.comingSoon": "शीघ्र आबि रहल अछि",
++  "landing.journey.soil.title": "माटिक जानकारी",
++  "landing.journey.soil.desc": "मौजूदा माटि सलाहकारसँ अपन माटिक pH, बनावट, मौसम आ पानिक अनुसार फसल जाँचू।",
++  "landing.journey.farm.title": "खेत प्रोफाइल",
++  "landing.journey.farm.desc": "अपन खेत, प्लॉट आ माटि जाँच एके ठाम सहेजू।",
++  "landing.journey.plan.title": "फसल योजना",
++  "landing.journey.plan.desc": "सहेजल माटि जाँचक आधार पर फसल आ अनुमानित उपजक योजना बनाउ।",
++  "landing.journey.harvest.title": "उपजसँ बजार धरि",
++  "landing.journey.harvest.desc": "अपन उपज जोड़ू, बजारक तुलना करू आ तकर बाद खरीदार, ढुलाइ आ भुगतान दिस आगू बढ़ू।",
++  "dashboard.farmHealthTitle": "खेतक स्वास्थ्य आ माटि",
++  "dashboard.farmHealthEmpty": "एखन धरि कोनो माटि जाँच सहेजल नहि अछि। अपन माटिक लेल उचित फसल देखबाक लेल माटि सलाहकार खोलू।",
++  "dashboard.farmHealthSensors": "माटि सेंसर: जुड़ल नहि अछि।",
++  "dashboard.farmHealthCta": "माटि सलाहकार खोलू"
+ }
+diff --git a/frontend/src/i18n/translations/ml.json b/frontend/src/i18n/translations/ml.json
+index fa2957c..371fd2e 100644
+--- a/frontend/src/i18n/translations/ml.json
++++ b/frontend/src/i18n/translations/ml.json
+@@ -1555,5 +1555,20 @@
+   "soil.sources": "സ്രോതസ്സുകൾ",
+   "soil.limits": "ഇത് പ്രാഥമിക പരിശോധന മാത്രമാണ്. ഇത് ഛത്തീസ്ഗഢിനോ നിങ്ങളുടെ ജില്ലയ്ക്കോ പ്രത്യേകമല്ലാത്ത പ്രസിദ്ധീകരിച്ച മാർഗനിർദേശങ്ങളെ ആശ്രയിക്കുന്നു; ഇത് മണ്ണ് പരിശോധനയല്ല. ഫോട്ടോയോ സെൻസറോ ഉപയോഗിക്കുന്നില്ല, പോഷകങ്ങളോ ലവണാംശമോ പരിശോധിക്കുന്നില്ല. സോയിൽ ഹെൽത്ത് കാർഡ് അല്ലെങ്കിൽ പ്രാദേശിക KVK വഴി ഉറപ്പാക്കുക.",
+   "soil.noneMatched": "പരിശോധിച്ച ഒരു വിളയും നിങ്ങളുടെ എല്ലാ വിവരങ്ങളോടും യോജിച്ചില്ല.",
+-  "soil.needInput": "കുറഞ്ഞത് ഒന്ന് നൽകുക: pH, ഘടന അല്ലെങ്കിൽ സീസൺ."
+-}
+\ No newline at end of file
++  "soil.needInput": "കുറഞ്ഞത് ഒന്ന് നൽകുക: pH, ഘടന അല്ലെങ്കിൽ സീസൺ.",
++  "landing.farmJourneyHeading": "മണ്ണിൽ നിന്ന് വിപണിയിലേക്ക്",
++  "landing.farmJourneySubtitle": "നിങ്ങളുടെ മണ്ണിന് ഏതൊക്കെ വിളകൾ അനുയോജ്യമാണെന്ന് പരിശോധിക്കുക, സീസൺ ആസൂത്രണം ചെയ്യുക, വിളവ് മികച്ച വിപണിയിലെത്തിക്കുക.",
++  "landing.comingSoon": "ഉടൻ വരുന്നു",
++  "landing.journey.soil.title": "മണ്ണിന്റെ വിവരങ്ങൾ",
++  "landing.journey.soil.desc": "നിലവിലുള്ള മണ്ണ് ഉപദേഷ്ടാവ് ഉപയോഗിച്ച് നിങ്ങളുടെ മണ്ണിന്റെ pH, ഘടന, സീസൺ, വെള്ളം എന്നിവ അനുസരിച്ച് വിളകൾ പരിശോധിക്കുക.",
++  "landing.journey.farm.title": "ഫാം പ്രൊഫൈൽ",
++  "landing.journey.farm.desc": "നിങ്ങളുടെ ഫാം, പ്ലോട്ടുകൾ, മണ്ണ് പരിശോധനകൾ എന്നിവ ഒരിടത്ത് സൂക്ഷിക്കുക.",
++  "landing.journey.plan.title": "വിള ആസൂത്രണം",
++  "landing.journey.plan.desc": "സൂക്ഷിച്ച മണ്ണ് പരിശോധനകളുടെ അടിസ്ഥാനത്തിൽ വിളകളും പ്രതീക്ഷിക്കുന്ന വിളവും ആസൂത്രണം ചെയ്യുക.",
++  "landing.journey.harvest.title": "വിളവിൽ നിന്ന് വിപണിയിലേക്ക്",
++  "landing.journey.harvest.desc": "നിങ്ങളുടെ വിളവ് ചേർക്കുക, വിപണികൾ താരതമ്യം ചെയ്യുക, തുടർന്ന് വാങ്ങുന്നവർ, ഗതാഗതം, പേയ്‌മെന്റ് എന്നിവയിലേക്ക് നീങ്ങുക.",
++  "dashboard.farmHealthTitle": "ഫാം ആരോഗ്യവും മണ്ണും",
++  "dashboard.farmHealthEmpty": "ഇതുവരെ മണ്ണ് പരിശോധനയൊന്നും സൂക്ഷിച്ചിട്ടില്ല. നിങ്ങളുടെ മണ്ണിന് ഏതൊക്കെ വിളകൾ അനുയോജ്യമെന്ന് കാണാൻ മണ്ണ് ഉപദേഷ്ടാവ് തുറക്കുക.",
++  "dashboard.farmHealthSensors": "മണ്ണ് സെൻസറുകൾ: ബന്ധിപ്പിച്ചിട്ടില്ല.",
++  "dashboard.farmHealthCta": "മണ്ണ് ഉപദേഷ്ടാവ് തുറക്കുക"
++}
+diff --git a/frontend/src/i18n/translations/mr.json b/frontend/src/i18n/translations/mr.json
+index 34ad3c8..e5f635d 100644
+--- a/frontend/src/i18n/translations/mr.json
++++ b/frontend/src/i18n/translations/mr.json
+@@ -1555,5 +1555,20 @@
+   "soil.sources": "स्रोत",
+   "soil.limits": "ही फक्त प्राथमिक तपासणी आहे. ती प्रकाशित मार्गदर्शनावर आधारित आहे जे छत्तीसगड किंवा तुमच्या जिल्ह्यासाठी विशिष्ट नाही, आणि माती परीक्षण नाही. ती फोटो किंवा सेन्सर वापरत नाही आणि पोषक द्रव्ये किंवा क्षारता तपासत नाही. मृदा आरोग्य पत्रिका किंवा स्थानिक केव्हीकेकडून खात्री करा.",
+   "soil.noneMatched": "तपासलेले कोणतेही पीक तुमच्या सर्व माहितीशी जुळले नाही.",
+-  "soil.needInput": "किमान एक निवडा: pH, पोत किंवा हंगाम."
++  "soil.needInput": "किमान एक निवडा: pH, पोत किंवा हंगाम.",
++  "landing.farmJourneyHeading": "मातीपासून बाजारापर्यंत",
++  "landing.farmJourneySubtitle": "तुमच्या मातीला कोणती पिके योग्य आहेत ते तपासा, हंगामाचे नियोजन करा आणि तुमचा शेतमाल सर्वोत्तम बाजारात न्या.",
++  "landing.comingSoon": "लवकरच येत आहे",
++  "landing.journey.soil.title": "मातीची माहिती",
++  "landing.journey.soil.desc": "सध्याच्या माती सल्लागाराद्वारे तुमच्या मातीचा pH, पोत, हंगाम आणि पाणी यानुसार पिके तपासा.",
++  "landing.journey.farm.title": "शेत प्रोफाइल",
++  "landing.journey.farm.desc": "तुमचे शेत, प्लॉट आणि माती चाचण्या एकाच ठिकाणी जतन करा.",
++  "landing.journey.plan.title": "पीक नियोजन",
++  "landing.journey.plan.desc": "जतन केलेल्या माती चाचण्यांवरून पिके आणि अपेक्षित उत्पादनाचे नियोजन करा.",
++  "landing.journey.harvest.title": "उत्पादनापासून बाजारापर्यंत",
++  "landing.journey.harvest.desc": "तुमचा शेतमाल जोडा, बाजारांची तुलना करा आणि नंतर खरेदीदार, वाहतूक आणि पेमेंटकडे जा.",
++  "dashboard.farmHealthTitle": "शेताचे आरोग्य आणि माती",
++  "dashboard.farmHealthEmpty": "अद्याप कोणतीही माती चाचणी जतन केलेली नाही. तुमच्या मातीला कोणती पिके योग्य आहेत हे पाहण्यासाठी माती सल्लागार उघडा.",
++  "dashboard.farmHealthSensors": "माती सेन्सर: जोडलेले नाहीत.",
++  "dashboard.farmHealthCta": "माती सल्लागार उघडा"
+ }
+diff --git a/frontend/src/i18n/translations/or.json b/frontend/src/i18n/translations/or.json
+index 8f17ddd..6afe262 100644
+--- a/frontend/src/i18n/translations/or.json
++++ b/frontend/src/i18n/translations/or.json
+@@ -1555,5 +1555,20 @@
+   "soil.sources": "ସୂତ୍ର",
+   "soil.limits": "ଏହା କେବଳ ପ୍ରାଥମିକ ଯାଞ୍ଚ। ଏହା ପ୍ରକାଶିତ ଦିଗଦର୍ଶନ ଉପରେ ଆଧାରିତ ଯାହା ଛତିଶଗଡ଼ ବା ଆପଣଙ୍କ ଜିଲ୍ଲା ପାଇଁ ନିର୍ଦ୍ଦିଷ୍ଟ ନୁହେଁ, ଏବଂ ଏହା ମାଟି ପରୀକ୍ଷା ନୁହେଁ। ଏହା ଫଟୋ ବା ସେନ୍ସର ବ୍ୟବହାର କରେ ନାହିଁ ଏବଂ ପୋଷକ ତତ୍ତ୍ୱ ବା ଲବଣତା ଯାଞ୍ଚ କରେ ନାହିଁ। ମୃତ୍ତିକା ସ୍ୱାସ୍ଥ୍ୟ କାର୍ଡ ବା ସ୍ଥାନୀୟ KVK ଠାରୁ ନିଶ୍ଚିତ କରନ୍ତୁ।",
+   "soil.noneMatched": "ଯାଞ୍ଚ କରାଯାଇଥିବା କୌଣସି ଫସଲ ଆପଣଙ୍କ ସମସ୍ତ ତଥ୍ୟ ସହ ମେଳ ଖାଇଲା ନାହିଁ।",
+-  "soil.needInput": "ଅତି କମରେ ଗୋଟିଏ ଦିଅନ୍ତୁ: pH, ଗଠନ ବା ଋତୁ।"
++  "soil.needInput": "ଅତି କମରେ ଗୋଟିଏ ଦିଅନ୍ତୁ: pH, ଗଠନ ବା ଋତୁ।",
++  "landing.farmJourneyHeading": "ମାଟିରୁ ବଜାର ପର୍ଯ୍ୟନ୍ତ",
++  "landing.farmJourneySubtitle": "ଆପଣଙ୍କ ମାଟି ପାଇଁ କେଉଁ ଫସଲ ଉପଯୁକ୍ତ ତାହା ଦେଖନ୍ତୁ, ଋତୁର ଯୋଜନା କରନ୍ତୁ ଏବଂ ଆପଣଙ୍କ ଫସଲକୁ ସର୍ବୋତ୍ତମ ବଜାରକୁ ନିଅନ୍ତୁ।",
++  "landing.comingSoon": "ଶୀଘ୍ର ଆସୁଛି",
++  "landing.journey.soil.title": "ମାଟି ସୂଚନା",
++  "landing.journey.soil.desc": "ବିଦ୍ୟମାନ ମାଟି ପରାମର୍ଶଦାତା ମାଧ୍ୟମରେ ଆପଣଙ୍କ ମାଟିର pH, ଗଠନ, ଋତୁ ଏବଂ ପାଣି ଅନୁସାରେ ଫସଲ ଯାଞ୍ଚ କରନ୍ତୁ।",
++  "landing.journey.farm.title": "ଚାଷଜମି ପ୍ରୋଫାଇଲ୍",
++  "landing.journey.farm.desc": "ଆପଣଙ୍କ ଚାଷଜମି, ପ୍ଲଟ୍ ଏବଂ ମାଟି ପରୀକ୍ଷା ଗୋଟିଏ ସ୍ଥାନରେ ସଂରକ୍ଷଣ କରନ୍ତୁ।",
++  "landing.journey.plan.title": "ଫସଲ ଯୋଜନା",
++  "landing.journey.plan.desc": "ସଂରକ୍ଷିତ ମାଟି ପରୀକ୍ଷା ଆଧାରରେ ଫସଲ ଏବଂ ଆଶା କରାଯାଉଥିବା ଅମଳର ଯୋଜନା କରନ୍ତୁ।",
++  "landing.journey.harvest.title": "ଅମଳରୁ ବଜାର ପର୍ଯ୍ୟନ୍ତ",
++  "landing.journey.harvest.desc": "ଆପଣଙ୍କ ଉତ୍ପାଦ ଯୋଗ କରନ୍ତୁ, ବଜାର ତୁଳନା କରନ୍ତୁ, ତା'ପରେ କ୍ରେତା, ପରିବହନ ଓ ପେମେଣ୍ଟ ଆଡ଼କୁ ଆଗକୁ ବଢ଼ନ୍ତୁ।",
++  "dashboard.farmHealthTitle": "ଚାଷଜମି ସ୍ୱାସ୍ଥ୍ୟ ଓ ମାଟି",
++  "dashboard.farmHealthEmpty": "ଏପର୍ଯ୍ୟନ୍ତ କୌଣସି ମାଟି ପରୀକ୍ଷା ସଂରକ୍ଷିତ ହୋଇ ନାହିଁ। ଆପଣଙ୍କ ମାଟି ପାଇଁ କେଉଁ ଫସଲ ଉପଯୁକ୍ତ ଦେଖିବାକୁ ମାଟି ପରାମର୍ଶଦାତା ଖୋଲନ୍ତୁ।",
++  "dashboard.farmHealthSensors": "ମାଟି ସେନ୍ସର: ସଂଯୁକ୍ତ ନାହିଁ।",
++  "dashboard.farmHealthCta": "ମାଟି ପରାମର୍ଶଦାତା ଖୋଲନ୍ତୁ"
+ }
+diff --git a/frontend/src/i18n/translations/pa.json b/frontend/src/i18n/translations/pa.json
+index 87ea807..d508be4 100644
+--- a/frontend/src/i18n/translations/pa.json
++++ b/frontend/src/i18n/translations/pa.json
+@@ -1555,5 +1555,20 @@
+   "soil.sources": "ਸਰੋਤ",
+   "soil.limits": "ਇਹ ਸਿਰਫ਼ ਮੁੱਢਲੀ ਜਾਂਚ ਹੈ। ਇਹ ਛਪੇ ਹੋਏ ਮਾਰਗਦਰਸ਼ਨ 'ਤੇ ਆਧਾਰਿਤ ਹੈ ਜੋ ਛੱਤੀਸਗੜ੍ਹ ਜਾਂ ਤੁਹਾਡੇ ਜ਼ਿਲ੍ਹੇ ਲਈ ਖ਼ਾਸ ਨਹੀਂ, ਅਤੇ ਇਹ ਮਿੱਟੀ ਦੀ ਜਾਂਚ ਨਹੀਂ। ਇਹ ਫ਼ੋਟੋ ਜਾਂ ਸੈਂਸਰ ਨਹੀਂ ਵਰਤਦਾ ਅਤੇ ਪੋਸ਼ਕ ਤੱਤ ਜਾਂ ਖਾਰਾਪਣ ਨਹੀਂ ਜਾਂਚਦਾ। ਸੌਇਲ ਹੈਲਥ ਕਾਰਡ ਜਾਂ ਸਥਾਨਕ KVK ਤੋਂ ਪੁਸ਼ਟੀ ਕਰੋ।",
+   "soil.noneMatched": "ਜਾਂਚੀ ਗਈ ਕੋਈ ਵੀ ਫ਼ਸਲ ਤੁਹਾਡੀ ਸਾਰੀ ਜਾਣਕਾਰੀ ਨਾਲ ਮੇਲ ਨਹੀਂ ਖਾਂਦੀ।",
+-  "soil.needInput": "ਘੱਟੋ-ਘੱਟ ਇੱਕ ਦਿਓ: pH, ਬਣਤਰ ਜਾਂ ਮੌਸਮ।"
++  "soil.needInput": "ਘੱਟੋ-ਘੱਟ ਇੱਕ ਦਿਓ: pH, ਬਣਤਰ ਜਾਂ ਮੌਸਮ।",
++  "landing.farmJourneyHeading": "ਮਿੱਟੀ ਤੋਂ ਮੰਡੀ ਤੱਕ",
++  "landing.farmJourneySubtitle": "ਦੇਖੋ ਕਿ ਤੁਹਾਡੀ ਮਿੱਟੀ ਲਈ ਕਿਹੜੀਆਂ ਫ਼ਸਲਾਂ ਠੀਕ ਹਨ, ਸੀਜ਼ਨ ਦੀ ਯੋਜਨਾ ਬਣਾਓ ਅਤੇ ਆਪਣੀ ਉਪਜ ਨੂੰ ਸਭ ਤੋਂ ਵਧੀਆ ਮੰਡੀ ਤੱਕ ਪਹੁੰਚਾਓ।",
++  "landing.comingSoon": "ਜਲਦੀ ਆ ਰਿਹਾ ਹੈ",
++  "landing.journey.soil.title": "ਮਿੱਟੀ ਦੀ ਜਾਣਕਾਰੀ",
++  "landing.journey.soil.desc": "ਮੌਜੂਦਾ ਮਿੱਟੀ ਸਲਾਹਕਾਰ ਨਾਲ ਆਪਣੀ ਮਿੱਟੀ ਦੇ pH, ਬਣਤਰ, ਸੀਜ਼ਨ ਅਤੇ ਪਾਣੀ ਅਨੁਸਾਰ ਫ਼ਸਲਾਂ ਜਾਂਚੋ।",
++  "landing.journey.farm.title": "ਖੇਤ ਪ੍ਰੋਫਾਈਲ",
++  "landing.journey.farm.desc": "ਆਪਣਾ ਖੇਤ, ਪਲਾਟ ਅਤੇ ਮਿੱਟੀ ਦੀਆਂ ਜਾਂਚਾਂ ਇੱਕ ਥਾਂ ਸੰਭਾਲੋ।",
++  "landing.journey.plan.title": "ਫ਼ਸਲ ਯੋਜਨਾ",
++  "landing.journey.plan.desc": "ਸੰਭਾਲੀਆਂ ਮਿੱਟੀ ਜਾਂਚਾਂ ਦੇ ਆਧਾਰ 'ਤੇ ਫ਼ਸਲਾਂ ਅਤੇ ਅਨੁਮਾਨਿਤ ਉਪਜ ਦੀ ਯੋਜਨਾ ਬਣਾਓ।",
++  "landing.journey.harvest.title": "ਉਪਜ ਤੋਂ ਮੰਡੀ ਤੱਕ",
++  "landing.journey.harvest.desc": "ਆਪਣੀ ਉਪਜ ਜੋੜੋ, ਮੰਡੀਆਂ ਦੀ ਤੁਲਨਾ ਕਰੋ ਅਤੇ ਫਿਰ ਖਰੀਦਦਾਰਾਂ, ਢੁਆਈ ਅਤੇ ਭੁਗਤਾਨ ਵੱਲ ਵਧੋ।",
++  "dashboard.farmHealthTitle": "ਖੇਤ ਦੀ ਸਿਹਤ ਅਤੇ ਮਿੱਟੀ",
++  "dashboard.farmHealthEmpty": "ਅਜੇ ਕੋਈ ਮਿੱਟੀ ਜਾਂਚ ਸੰਭਾਲੀ ਨਹੀਂ ਗਈ। ਆਪਣੀ ਮਿੱਟੀ ਲਈ ਠੀਕ ਫ਼ਸਲਾਂ ਦੇਖਣ ਲਈ ਮਿੱਟੀ ਸਲਾਹਕਾਰ ਖੋਲ੍ਹੋ।",
++  "dashboard.farmHealthSensors": "ਮਿੱਟੀ ਸੈਂਸਰ: ਜੁੜੇ ਨਹੀਂ ਹਨ।",
++  "dashboard.farmHealthCta": "ਮਿੱਟੀ ਸਲਾਹਕਾਰ ਖੋਲ੍ਹੋ"
+ }
+diff --git a/frontend/src/i18n/translations/ta.json b/frontend/src/i18n/translations/ta.json
+index 1f817f5..ef4005d 100644
+--- a/frontend/src/i18n/translations/ta.json
++++ b/frontend/src/i18n/translations/ta.json
+@@ -1555,5 +1555,20 @@
+   "soil.sources": "ஆதாரங்கள்",
+   "soil.limits": "இது ஆரம்பநிலை சரிபார்ப்பு மட்டுமே. இது சத்தீஸ்கர் அல்லது உங்கள் மாவட்டத்துக்கு உரியதல்லாத வெளியிடப்பட்ட வழிகாட்டுதலை அடிப்படையாகக் கொண்டது; மண் பரிசோதனை அல்ல. படங்கள் அல்லது சென்சார்களைப் பயன்படுத்தாது; ஊட்டச்சத்து, உப்புத்தன்மையைச் சரிபார்க்காது. மண் வள அட்டை அல்லது உள்ளூர் KVK-யிடம் உறுதிசெய்யுங்கள்.",
+   "soil.noneMatched": "சரிபார்த்த எந்தப் பயிரும் உங்கள் அனைத்து உள்ளீடுகளுடனும் பொருந்தவில்லை.",
+-  "soil.needInput": "குறைந்தது ஒன்றை உள்ளிடுங்கள்: pH, அமைப்பு அல்லது பருவம்."
++  "soil.needInput": "குறைந்தது ஒன்றை உள்ளிடுங்கள்: pH, அமைப்பு அல்லது பருவம்.",
++  "landing.farmJourneyHeading": "மண்ணிலிருந்து சந்தை வரை",
++  "landing.farmJourneySubtitle": "உங்கள் மண்ணுக்கு எந்தப் பயிர்கள் ஏற்றவை என்பதைச் சரிபார்த்து, பருவத்தைத் திட்டமிட்டு, உங்கள் விளைபொருளைச் சிறந்த சந்தைக்குக் கொண்டு செல்லுங்கள்.",
++  "landing.comingSoon": "விரைவில் வருகிறது",
++  "landing.journey.soil.title": "மண் தகவல்",
++  "landing.journey.soil.desc": "தற்போதுள்ள மண் ஆலோசகரைப் பயன்படுத்தி உங்கள் மண்ணின் pH, அமைப்பு, பருவம், நீர் ஆகியவற்றுக்கு ஏற்ப பயிர்களைச் சரிபார்க்கவும்.",
++  "landing.journey.farm.title": "பண்ணை விவரம்",
++  "landing.journey.farm.desc": "உங்கள் பண்ணை, நிலப்பகுதிகள், மண் பரிசோதனைகளை ஓரிடத்தில் சேமிக்கவும்.",
++  "landing.journey.plan.title": "பயிர் திட்டமிடல்",
++  "landing.journey.plan.desc": "சேமித்த மண் பரிசோதனைகளின் அடிப்படையில் பயிர்களையும் எதிர்பார்க்கும் விளைச்சலையும் திட்டமிடுங்கள்.",
++  "landing.journey.harvest.title": "அறுவடையிலிருந்து சந்தை வரை",
++  "landing.journey.harvest.desc": "உங்கள் விளைபொருளைச் சேர்த்து, சந்தைகளை ஒப்பிட்டு, பின்னர் வாங்குபவர்கள், போக்குவரத்து, கட்டணம் ஆகியவற்றுக்குச் செல்லுங்கள்.",
++  "dashboard.farmHealthTitle": "பண்ணை நலமும் மண்ணும்",
++  "dashboard.farmHealthEmpty": "மண் பரிசோதனை எதுவும் இன்னும் சேமிக்கப்படவில்லை. உங்கள் மண்ணுக்கு ஏற்ற பயிர்களைப் பார்க்க மண் ஆலோசகரைத் திறக்கவும்.",
++  "dashboard.farmHealthSensors": "மண் உணரிகள்: இணைக்கப்படவில்லை.",
++  "dashboard.farmHealthCta": "மண் ஆலோசகரைத் திறக்கவும்"
+ }
+diff --git a/frontend/src/i18n/translations/te.json b/frontend/src/i18n/translations/te.json
+index 0c913b4..e207685 100644
+--- a/frontend/src/i18n/translations/te.json
++++ b/frontend/src/i18n/translations/te.json
+@@ -1555,5 +1555,20 @@
+   "soil.sources": "మూలాలు",
+   "soil.limits": "ఇది ప్రాథమిక పరిశీలన మాత్రమే. ఇది ప్రచురితమైన మార్గదర్శకాలపై ఆధారపడింది, అవి ఛత్తీస్‌గఢ్ లేదా మీ జిల్లాకు ప్రత్యేకమైనవి కావు; ఇది నేల పరీక్ష కాదు. ఫోటోలు లేదా సెన్సర్లను వాడదు, పోషకాలు లేదా లవణీయతను తనిఖీ చేయదు. భూసార కార్డు లేదా స్థానిక KVKతో నిర్ధారించుకోండి.",
+   "soil.noneMatched": "పరిశీలించిన ఏ పంటా మీ అన్ని వివరాలకు సరిపోలేదు.",
+-  "soil.needInput": "కనీసం ఒకటి ఇవ్వండి: pH, నిర్మాణం లేదా సీజన్."
+-}
+\ No newline at end of file
++  "soil.needInput": "కనీసం ఒకటి ఇవ్వండి: pH, నిర్మాణం లేదా సీజన్.",
++  "landing.farmJourneyHeading": "నేల నుండి మార్కెట్ వరకు",
++  "landing.farmJourneySubtitle": "మీ నేలకు ఏ పంటలు సరిపోతాయో చూడండి, సీజన్‌ను ప్లాన్ చేయండి, మీ పంటను ఉత్తమ మార్కెట్‌కు తీసుకెళ్లండి.",
++  "landing.comingSoon": "త్వరలో వస్తోంది",
++  "landing.journey.soil.title": "నేల సమాచారం",
++  "landing.journey.soil.desc": "ప్రస్తుత నేల సలహాదారుతో మీ నేల pH, నిర్మాణం, సీజన్, నీటిని బట్టి పంటలను పరిశీలించండి.",
++  "landing.journey.farm.title": "వ్యవసాయ ప్రొఫైల్",
++  "landing.journey.farm.desc": "మీ పొలం, ప్లాట్లు, నేల పరీక్షలను ఒకే చోట భద్రపరచండి.",
++  "landing.journey.plan.title": "పంట ప్రణాళిక",
++  "landing.journey.plan.desc": "భద్రపరచిన నేల పరీక్షల ఆధారంగా పంటలు, అంచనా దిగుబడిని ప్లాన్ చేయండి.",
++  "landing.journey.harvest.title": "కోత నుండి మార్కెట్ వరకు",
++  "landing.journey.harvest.desc": "మీ ఉత్పత్తిని జోడించండి, మార్కెట్లను పోల్చండి, ఆపై కొనుగోలుదారులు, రవాణా, చెల్లింపుల వైపు కొనసాగండి.",
++  "dashboard.farmHealthTitle": "పొలం ఆరోగ్యం & నేల",
++  "dashboard.farmHealthEmpty": "ఇంకా నేల పరీక్ష ఏదీ భద్రపరచలేదు. మీ నేలకు ఏ పంటలు సరిపోతాయో చూడటానికి నేల సలహాదారును తెరవండి.",
++  "dashboard.farmHealthSensors": "నేల సెన్సర్లు: కనెక్ట్ కాలేదు.",
++  "dashboard.farmHealthCta": "నేల సలహాదారును తెరవండి"
++}
+diff --git a/frontend/src/i18n/translations/ur.json b/frontend/src/i18n/translations/ur.json
+index b721b82..f2f172f 100644
+--- a/frontend/src/i18n/translations/ur.json
++++ b/frontend/src/i18n/translations/ur.json
+@@ -1674,5 +1674,20 @@
+   "soil.sources": "ذرائع",
+   "soil.limits": "یہ صرف ابتدائی جانچ ہے۔ یہ شائع شدہ رہنمائی پر مبنی ہے جو چھتیس گڑھ یا آپ کے ضلع کے لیے مخصوص نہیں، اور یہ مٹی کا ٹیسٹ نہیں ہے۔ یہ تصاویر یا سینسر استعمال نہیں کرتا اور غذائی اجزا یا نمکیات نہیں جانچتا۔ سوائل ہیلتھ کارڈ یا مقامی KVK سے تصدیق کریں۔",
+   "soil.noneMatched": "جانچی گئی کوئی بھی فصل آپ کی تمام معلومات سے مطابقت نہیں رکھتی۔",
+-  "soil.needInput": "کم از کم ایک درج کریں: pH، ساخت یا موسم۔"
++  "soil.needInput": "کم از کم ایک درج کریں: pH، ساخت یا موسم۔",
++  "landing.farmJourneyHeading": "مٹی سے منڈی تک",
++  "landing.farmJourneySubtitle": "دیکھیں کہ آپ کی مٹی کے لیے کون سی فصلیں مناسب ہیں، موسم کی منصوبہ بندی کریں اور اپنی پیداوار کو بہترین منڈی تک پہنچائیں۔",
++  "landing.comingSoon": "جلد آ رہا ہے",
++  "landing.journey.soil.title": "مٹی کی معلومات",
++  "landing.journey.soil.desc": "موجودہ مٹی مشیر سے اپنی مٹی کے pH، ساخت، موسم اور پانی کے مطابق فصلیں جانچیں۔",
++  "landing.journey.farm.title": "کھیت پروفائل",
++  "landing.journey.farm.desc": "اپنا کھیت، پلاٹ اور مٹی کے ٹیسٹ ایک جگہ محفوظ کریں۔",
++  "landing.journey.plan.title": "فصل کی منصوبہ بندی",
++  "landing.journey.plan.desc": "محفوظ شدہ مٹی ٹیسٹ کی بنیاد پر فصلوں اور متوقع پیداوار کی منصوبہ بندی کریں۔",
++  "landing.journey.harvest.title": "پیداوار سے منڈی تک",
++  "landing.journey.harvest.desc": "اپنی پیداوار شامل کریں، منڈیوں کا موازنہ کریں، پھر خریداروں، ٹرانسپورٹ اور ادائیگی کی طرف بڑھیں۔",
++  "dashboard.farmHealthTitle": "کھیت کی صحت اور مٹی",
++  "dashboard.farmHealthEmpty": "ابھی تک کوئی مٹی ٹیسٹ محفوظ نہیں کیا گیا۔ اپنی مٹی کے لیے موزوں فصلیں دیکھنے کے لیے مٹی مشیر کھولیں۔",
++  "dashboard.farmHealthSensors": "مٹی کے سینسر: منسلک نہیں ہیں۔",
++  "dashboard.farmHealthCta": "مٹی مشیر کھولیں"
+ }
+diff --git a/frontend/src/pages/FarmerDashboard.jsx b/frontend/src/pages/FarmerDashboard.jsx
+index e5dfd8b..ff2d1f6 100644
+--- a/frontend/src/pages/FarmerDashboard.jsx
++++ b/frontend/src/pages/FarmerDashboard.jsx
+@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
+ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
+ import {
+   Package, Briefcase, ShoppingCart, Bell, Bot, Truck, Handshake, Calculator,
+-  MapPin, ArrowRight, TrendingUp, TrendingDown, Minus, LineChart as LineChartIcon, ScrollText,
++  MapPin, ArrowRight, TrendingUp, TrendingDown, Minus, LineChart as LineChartIcon, ScrollText, Sprout,
+ } from 'lucide-react'
+ import { api } from '../api/client'
+ import { useAuth } from '../context/AuthContext'
+@@ -178,6 +178,17 @@ export default function FarmerDashboard() {
+       {/* Best Selling Opportunity -- the primary decision, right after the journey */}
+       <BestSellingOpportunity item={focusLot} comparison={comparison} loading={comparisonLoading} error={comparisonError} />
+ 
++      {/* Farm Health & Soil -- no soil-test storage exists yet, so this is an honest empty state */}
++      <div className="bg-white rounded-3xl p-5 shadow-card border border-black/5 flex flex-col sm:flex-row sm:items-center gap-4">
++        <div className="w-11 h-11 rounded-xl bg-forest/10 text-forest flex items-center justify-center shrink-0"><Sprout size={20} /></div>
++        <div className="flex-1 min-w-0">
++          <h3 className="font-display font-semibold text-lg">{t('dashboard.farmHealthTitle')}</h3>
++          <p className="text-sm text-ink/60">{t('dashboard.farmHealthEmpty')}</p>
++          <p className="text-xs text-ink/45 mt-1">{t('dashboard.farmHealthSensors')}</p>
++        </div>
++        <Link to="/soil-advisor" className="text-sm font-semibold bg-forest text-paper px-4 py-2 rounded-lg hover:bg-forest-dark transition-colors text-center">{t('dashboard.farmHealthCta')}</Link>
++      </div>
++
+       {/* Key metrics -- real counts, not decorative */}
+       <div>
+         <SectionLabel icon={LineChartIcon}>{t('dashboard.keyMetrics')}</SectionLabel>
+diff --git a/frontend/src/pages/Landing.jsx b/frontend/src/pages/Landing.jsx
+index 8058ad8..7a09a2e 100644
+--- a/frontend/src/pages/Landing.jsx
++++ b/frontend/src/pages/Landing.jsx
+@@ -2,7 +2,7 @@ import React from 'react'
+ import { Link } from 'react-router-dom'
+ import {
+   Sprout, BarChart3, Handshake, Truck, Wallet, ArrowRight,
+-  TrendingUp, Bot, LineChart, Store, Users, ShieldCheck,
++  TrendingUp, Bot, LineChart, Store, Users, ShieldCheck, Layers, ClipboardList, PackageCheck,
+ } from 'lucide-react'
+ import PriceTicker from '../components/PriceTicker'
+ import LanguageSelector from '../components/LanguageSelector'
+@@ -31,6 +31,16 @@ const FEATURES = [
+   { icon: Truck, titleKey: 'landing.featureFarmPool', descKey: 'landing.featureFarmPoolDesc' },
+ ]
+ 
++// Farm-to-market journey. Soil Intelligence (the existing Soil Advisor) and
++// Harvest-to-Market (existing lots, Best Option and market comparison) are live.
++// Farm Profile and Crop Planning are not built yet and are labelled so.
++const FARM_JOURNEY = [
++  { icon: Sprout, key: 'soil', to: '/register', live: true },
++  { icon: Layers, key: 'farm', live: false },
++  { icon: ClipboardList, key: 'plan', live: false },
++  { icon: PackageCheck, key: 'harvest', to: '/register', live: true },
++]
++
+ const STEPS = [
+   { step: '01', titleKey: 'landing.stepHarvest', descKey: 'landing.stepHarvestDesc' },
+   { step: '02', titleKey: 'landing.stepProfit', descKey: 'landing.stepProfitDesc' },
+@@ -236,6 +246,30 @@ export default function Landing() {
+         </div>
+       </section>
+ 
++      {/* ---------- Farm-to-market journey ---------- */}
++      <section className="px-6 md:px-10 pb-16 md:pb-20 max-w-6xl mx-auto" aria-labelledby="farm-journey-heading">
++        <h2 id="farm-journey-heading" className="font-display text-2xl md:text-3xl font-bold text-center mb-3">{t('landing.farmJourneyHeading')}</h2>
++        <p className="text-center text-ink/60 dark:text-paper/60 mb-10">{t('landing.farmJourneySubtitle')}</p>
++        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
++          {FARM_JOURNEY.map(c => {
++            const body = (
++              <>
++                <div className="flex items-center justify-between mb-4">
++                  <div className="w-11 h-11 rounded-xl bg-forest/10 dark:bg-forest-light/15 text-forest dark:text-forest-light flex items-center justify-center"><c.icon size={20} /></div>
++                  {!c.live && <span className="text-[10px] font-bold uppercase tracking-wide bg-marigold/20 text-ink dark:text-paper px-2 py-1 rounded-full">{t('landing.comingSoon')}</span>}
++                </div>
++                <h3 className="font-display font-semibold text-lg mb-2">{t(`landing.journey.${c.key}.title`)}</h3>
++                <p className="text-sm text-ink/60 dark:text-paper/60 leading-relaxed">{t(`landing.journey.${c.key}.desc`)}</p>
++              </>
++            )
++            const cls = 'block h-full bg-white dark:bg-white/5 rounded-3xl p-6 shadow-card border border-black/5 dark:border-white/10'
++            return c.live
++              ? <Link key={c.key} to={c.to} className={`${cls} hover:-translate-y-0.5 hover:shadow-lifted transition-all`}>{body}</Link>
++              : <div key={c.key} className={`${cls} opacity-90`}>{body}</div>
++          })}
++        </div>
++      </section>
++
+       {/* ---------- How it works (supporting, not centerpiece) ---------- */}
+       <section className="bg-white dark:bg-white/5 py-14 border-y border-black/5 dark:border-white/10">
+         <div className="max-w-4xl mx-auto px-6 md:px-10">
