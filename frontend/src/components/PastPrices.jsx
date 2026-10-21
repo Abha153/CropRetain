@@ -228,6 +228,7 @@ export default function PastPrices({ crop, market, cropLabel }) {
 
   const rows = useMemo(() => (data?.available ? toRows(data.points, data.gaps) : []), [data])
   const name = cropLabel || crop
+  const where = data?.scope === 'state' ? `${data.state} (statewide average)` : market
 
   return (
     <section className="mb-10" aria-labelledby="past-prices-h">
@@ -293,7 +294,7 @@ export default function PastPrices({ crop, market, cropLabel }) {
             {asTable ? (
               <div className="overflow-x-auto max-h-80 overflow-y-auto">
                 <table className="w-full text-xs border-collapse">
-                  <caption className="sr-only">Recorded prices for {name} in {market}</caption>
+                  <caption className="sr-only">Recorded prices for {name}: {where}</caption>
                   <thead>
                     <tr className="text-left text-ink/60">
                       {['Date', '₹ per kg', '₹ per quintal', 'Source'].map(h => <th key={h} scope="col" className="font-semibold py-1.5 pr-4 border-b border-black/10 whitespace-nowrap">{h}</th>)}
@@ -312,7 +313,7 @@ export default function PastPrices({ crop, market, cropLabel }) {
                 </table>
               </div>
             ) : (
-              <div role="img" aria-label={`Line chart of recorded ${name} prices in ${market}, ${s.n_points} days from ${fmtDate(s.first_date)} to ${fmtDate(latest.date)}`}>
+              <div role="img" aria-label={`Line chart of recorded ${name} prices, ${where}, ${s.n_points} days from ${fmtDate(s.first_date)} to ${fmtDate(latest.date)}`}>
                 <Chart rows={rows} gaps={data.gaps} c={c} />
               </div>
             )}

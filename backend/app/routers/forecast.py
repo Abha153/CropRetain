@@ -11,7 +11,8 @@ from app.services.price_predictor import predict_next_days, backtest_accuracy
 router = APIRouter(prefix="/forecast", tags=["forecast"])
 
 MIN_REAL_POINTS_FOR_FORECAST = 4
-UNAVAILABLE_MESSAGE = "Historical mandi data is currently unavailable."
+UNAVAILABLE_MESSAGE = ("Not enough live mandi price history has accumulated for this crop and market to run the "
+                       "trend forecast. (Recorded history from other sources may still exist; see /forecast/ml/availability.)")
 
 
 @router.get("")
@@ -40,14 +41,17 @@ def get_forecast(crop: str, market: str, history_days: int = 30, predict_days: i
         if not include_demo:
             return {
                 "crop": crop, "market": market, "available": False,
-                "is_demo": False, "message": UNAVAILABLE_MESSAGE,
+                "is_demo": False, "reason": "insufficient_live_history",
+                "live_points": len(rows), "min_live_points": MIN_REAL_POINTS_FOR_FORECAST,
+                "message": UNAVAILABLE_MESSAGE,
             }
         rows = _history_rows(db, crop, market, data_source="demo")
         is_demo = True
         if not rows:
             return {
                 "crop": crop, "market": market, "available": False,
-                "is_demo": True, "message": UNAVAILABLE_MESSAGE,
+                "is_demo": True, "reason": "no_demo_data",
+                "message": "No synthetic demo series exists for this crop and market.",
             }
 
     full_history = [{"date": r.date, "modal_price": round(r.modal_price / 100.0, 2),

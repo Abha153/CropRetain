@@ -117,3 +117,31 @@ trained (test MAE 263) but did not beat HistGradientBoosting on validation by th
 Limits: the series is statewide, not any one mandi; it is only as fresh as the last export of `state_prices.csv` (the
 endpoint refuses data older than 14 days); and the test period contains an unusually large Onion price rise, which is
 hard for any model.
+
+## Verifying that ML is actually working (any environment)
+
+Run these against your backend (replace `$API` with e.g. `http://localhost:8000` or your deployed URL):
+
+```bash
+curl -s $API/forecast/ml/status
+```
+* `"available": true` and a `crops` list -> the ML libraries and model files are loaded. Expect `["Onion","Potato"]`.
+* `"reason": "ml_dependencies_missing"` -> the server was installed without numpy/pandas/scikit-learn/joblib. These are now in `backend/requirements.txt`; redeploy with a fresh install.
+* `"reason": "artifacts_missing"` -> `backend/models/price_forecast/` was not deployed with the app.
+
+```bash
+curl -s "$API/forecast/ml?crop=Potato&market=Bilaspur"
+curl -s "$API/forecast/ml?crop=Soybean&market=Raipur"
+```
+* Potato/Bilaspur returns a forecast. If there is no recent live price history it is a **historical replay** (`is_historical_replay: true`, `history_source: "training_snapshot"`) of data that ends in June 2025, flagged with a staleness warning. It is a demonstration of the model, **not a prediction for next week**.
+* Soybean returns `unsupported_crop`: the trained model covers only Onion and Potato (Tomato and Wheat were excluded because they lacked enough held-out rows to measure accuracy; the other crops were never trained).
+* A *live* forecast needs fresh rows in `market_prices` with `data_source="live"` for that crop and market.
+
+The farmer dashboard shows the same facts: a forecast card with a model line ("Model: ... trained on data up to ...") that names what the server is really running, and a reason-specific message whenever no forecast is available.
+
+`/forecast/ml/compare` never turns a historical replay into `forecast_net_profit` or into the forecast ranking; those use live-history forecasts only.
+
+## Deployment notes
+* Install from `backend/requirements.txt` (includes the serving dependencies). scikit-learn is pinned to the version the shipped model was trained with (1.9.1) because pickled models are not guaranteed to load across versions.
+* Memory: the API with ML loaded used about 250 MB RSS in local measurement. Check this against your host's memory limit before deploying.
+* Known limits: 11 trained markets (only Bilaspur, Durg and Rajnandgaon are Chhattisgarh markets); on the test split the model did not beat the "price stays the same" baseline, which the API reports as a warning.

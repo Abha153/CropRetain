@@ -15,6 +15,7 @@ import SellingJourney from '../components/SellingJourney'
 import WeatherCard from '../components/WeatherCard'
 import BestSellingOpportunity from '../components/BestSellingOpportunity'
 import FarmHealthCard from '../components/FarmHealthCard'
+import MlForecastCard from '../components/MlForecastCard'
 import { selectFocusJourney } from '../utils/sellingJourney'
 
 const TXN_STATUS_TONE = {
@@ -83,6 +84,7 @@ export default function FarmerDashboard() {
   const [error, setError] = useState('')
 
   const [comparison, setComparison] = useState(null)
+  const [mlStatus, setMlStatus] = useState(null)   // GET /forecast/ml/status (what is really running)
   const [comparisonLoading, setComparisonLoading] = useState(false)
   const [comparisonError, setComparisonError] = useState('')
 
@@ -104,15 +106,27 @@ export default function FarmerDashboard() {
 
   const journey = (lots && transactions) ? selectFocusJourney(lots, transactions) : null
   const focusLot = journey?.lot || null
+  // ML fields exist only when /forecast/ml/compare answered (not the fallback).
+  const hasMlCompare = !!comparison && Array.isArray(comparison.options) && comparison.options.some(o => 'ml_forecast' in o)
+  const mlForecast = hasMlCompare
+    ? (comparison.options.find(o => o.market === comparison.recommended_market)?.ml_forecast || null)
+    // A comparison arrived but without ML fields = the ML call failed and we fell back.
+    : (comparison ? { available: false, reason: 'request_failed' } : null)
 
   // Best Selling Opportunity + Market Comparison: ONE call, shared by both
   // sections below -- no duplicated business logic, real /market/compare
   // data throughout (see BestSellingOpportunity.jsx).
+  useEffect(() => { api.getMlStatus().then(setMlStatus).catch(() => setMlStatus(null)) }, [])
+
   useEffect(() => {
     if (!focusLot) return
     setComparisonLoading(true)
     setComparisonError('')
-    api.compareMarkets(focusLot.crop, focusLot.quantity_kg, focusLot.location)
+    // /forecast/ml/compare = the SAME market comparison plus a forecast per market.
+    // If it fails for any reason, fall back to the plain comparison so the
+    // dashboard never loses the existing, working section.
+    api.getMlCompare(focusLot.crop, focusLot.quantity_kg, focusLot.location)
+      .catch(() => api.compareMarkets(focusLot.crop, focusLot.quantity_kg, focusLot.location))
       .then(setComparison)
       .catch(e => setComparisonError(e.message))
       .finally(() => setComparisonLoading(false))
@@ -196,7 +210,7 @@ export default function FarmerDashboard() {
       {/* Market Comparison + Price Trend + Weather -- the intelligence row */}
       <div>
         <SectionLabel icon={ScrollText}>{t('dashboard.marketIntelligence')}</SectionLabel>
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
           <div className="lg:col-span-2 space-y-6">
             {comparison && comparison.options?.length > 1 && (
               <div className="bg-white dark:bg-white/5 rounded-2xl shadow-card border border-black/5 dark:border-white/10 p-5 md:p-6 overflow-x-auto">
@@ -210,6 +224,7 @@ export default function FarmerDashboard() {
                       <th className="pb-2 font-medium">{t('dashboard.distance')}</th>
                       <th className="pb-2 font-medium">{t('dashboard.transport')}</th>
                       <th className="pb-2 font-medium">{t('dashboard.netRealization')}</th>
+                      {hasMlCompare && <th className="pb-2 font-medium">{t('dashboard.mlCompare.forecastNet')}</th>}
                     </tr>
                   </thead>
                   <tbody>
@@ -223,10 +238,20 @@ export default function FarmerDashboard() {
                         <td className="py-2.5">{o.distance_km} km</td>
                         <td className="py-2.5 font-mono-data">₹{o.transport_cost.toLocaleString('en-IN')}</td>
                         <td className="py-2.5 font-mono-data font-semibold">₹{o.net_profit.toLocaleString('en-IN')}</td>
+                        {hasMlCompare && (
+                          <td className="py-2.5 font-mono-data">
+                            {o.forecast_net_profit != null ? `₹${o.forecast_net_profit.toLocaleString('en-IN')}` : '—'}
+                          </td>
+                        )}
                       </tr>
                     ))}
                   </tbody>
                 </table>
+                {hasMlCompare && comparison.forecast_coverage && (
+                  <p className="text-[11px] text-ink/40 dark:text-paper/40 mt-2">
+                    {t('dashboard.mlCompare.coverage', { coverage: comparison.forecast_coverage })}
+                  </p>
+                )}
               </div>
             )}
 
@@ -267,6 +292,34 @@ export default function FarmerDashboard() {
                 </p>
               )}
             </div>
+
+            {/* ML forecast: shown only from real /forecast/ml data, honest empty state otherwise */}
+            <MlForecastCard forecast={mlForecast} status={mlStatus} crop={focusLot?.crop} market={comparison?.recommended_market} loading={comparisonLoading} />
+
+            {/* Buyer demand relevant to this crop */}
+            <div className="bg-white dark:bg-white/5 rounded-2xl shadow-card border border-black/5 dark:border-white/10 p-5">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="font-display font-semibold">{t('dashboard.buyerDemand')}</h2>
+                <Link to="/buyer-demands" className="text-sm text-forest dark:text-forest-light font-semibold hover:underline">{t('dashboard.all')} →</Link>
+              </div>
+              {!demands || demands.length === 0 ? (
+                <p className="text-sm text-ink/50 dark:text-paper/50">
+                  {focusLot ? t('dashboard.noBuyerDemand') : t('dashboard.addProduceForDemand')}
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {demands.slice(0, 3).map(d => (
+                    <div key={d.id} className="text-xs border border-black/5 dark:border-white/10 rounded-lg px-3 py-2">
+                      <div className="font-semibold">{d.required_quantity_kg.toLocaleString('en-IN')} kg {d.crop}</div>
+                      <div className="text-ink/50 dark:text-paper/50 mt-0.5">
+                        {d.target_price_per_kg ? `${t('dashboard.target')} ₹${d.target_price_per_kg}/kg` : t('dashboard.priceNegotiable')}
+                        {d.delivery_location ? ` · ${d.delivery_location}` : ''}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="space-y-6">
@@ -301,31 +354,6 @@ export default function FarmerDashboard() {
               )
             })()}
 
-            {/* Buyer demand relevant to this crop */}
-            <div className="bg-white dark:bg-white/5 rounded-2xl shadow-card border border-black/5 dark:border-white/10 p-5">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="font-display font-semibold">{t('dashboard.buyerDemand')}</h2>
-                <Link to="/buyer-demands" className="text-sm text-forest dark:text-forest-light font-semibold hover:underline">{t('dashboard.all')} →</Link>
-              </div>
-              {!demands || demands.length === 0 ? (
-                <p className="text-sm text-ink/50 dark:text-paper/50">
-                  {focusLot ? t('dashboard.noBuyerDemand') : t('dashboard.addProduceForDemand')}
-                </p>
-              ) : (
-                <div className="space-y-2">
-                  {demands.slice(0, 3).map(d => (
-                    <div key={d.id} className="text-xs border border-black/5 dark:border-white/10 rounded-lg px-3 py-2">
-                      <div className="font-semibold">{d.required_quantity_kg.toLocaleString('en-IN')} kg {d.crop}</div>
-                      <div className="text-ink/50 dark:text-paper/50 mt-0.5">
-                        {d.target_price_per_kg ? `${t('dashboard.target')} ₹${d.target_price_per_kg}/kg` : t('dashboard.priceNegotiable')}
-                        {d.delivery_location ? ` · ${d.delivery_location}` : ''}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
             {/* AI Advisor entry */}
             <Link to="/advisor" className="block bg-forest-dark text-paper rounded-2xl p-5 hover:opacity-90 transition-opacity">
               <div className="flex items-center gap-2 mb-1">
@@ -344,8 +372,9 @@ export default function FarmerDashboard() {
       {/* Transactions + Alerts + Lots */}
       <div>
         <SectionLabel icon={Briefcase}>{t('dashboard.sellShip')}</SectionLabel>
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-2 bg-white dark:bg-white/5 rounded-2xl shadow-card border border-black/5 dark:border-white/10 p-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+          <div className="lg:col-span-2 space-y-6">
+          <div className="bg-white dark:bg-white/5 rounded-2xl shadow-card border border-black/5 dark:border-white/10 p-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="font-display font-semibold text-lg">{t('dashboard.activeTransactions')}</h2>
               <Link to="/transactions" className="text-sm text-forest dark:text-forest-light font-semibold hover:underline">{t('dashboard.viewAll')} →</Link>
@@ -367,6 +396,26 @@ export default function FarmerDashboard() {
             )}
           </div>
 
+            <div className="bg-white dark:bg-white/5 rounded-2xl shadow-card border border-black/5 dark:border-white/10 p-5">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="font-display font-semibold">{t('dashboard.myLots')}</h2>
+                <Link to="/lots" className="text-sm text-forest dark:text-forest-light font-semibold hover:underline">{t('dashboard.all')} →</Link>
+              </div>
+              {activeLots.length === 0 ? (
+                <p className="text-sm text-ink/50 dark:text-paper/50">{t('dashboard.noActiveLots')} <Link to="/lots" className="text-forest dark:text-forest-light underline">{t('dashboard.createOne')} →</Link></p>
+              ) : (
+                <div className="space-y-2">
+                  {activeLots.slice(0, 3).map(l => (
+                    <div key={l.id} className="text-xs border border-black/5 dark:border-white/10 rounded-lg px-3 py-2">
+                      <div className="font-semibold">{l.lot_number}</div>
+                      <div className="text-ink/50 dark:text-paper/50">{l.crop} · {l.quantity_kg.toLocaleString()} kg · {t('dashboard.grade')} {l.grade}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
           <div className="space-y-4">
             <div className="bg-white dark:bg-white/5 rounded-2xl shadow-card border border-black/5 dark:border-white/10 p-5">
               <div className="flex items-center justify-between mb-3">
@@ -381,25 +430,6 @@ export default function FarmerDashboard() {
                     <div key={n.id} className="text-sm border-l-2 border-marigold pl-3">
                       <div className="font-medium text-xs">{n.title}</div>
                       <div className="text-ink/50 dark:text-paper/50 text-xs">{n.message}</div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="bg-white dark:bg-white/5 rounded-2xl shadow-card border border-black/5 dark:border-white/10 p-5">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="font-display font-semibold">{t('dashboard.myLots')}</h2>
-                <Link to="/lots" className="text-sm text-forest dark:text-forest-light font-semibold hover:underline">{t('dashboard.all')} →</Link>
-              </div>
-              {activeLots.length === 0 ? (
-                <p className="text-sm text-ink/50 dark:text-paper/50">{t('dashboard.noActiveLots')} <Link to="/lots" className="text-forest dark:text-forest-light underline">{t('dashboard.createOne')} →</Link></p>
-              ) : (
-                <div className="space-y-2">
-                  {activeLots.slice(0, 3).map(l => (
-                    <div key={l.id} className="text-xs border border-black/5 dark:border-white/10 rounded-lg px-3 py-2">
-                      <div className="font-semibold">{l.lot_number}</div>
-                      <div className="text-ink/50 dark:text-paper/50">{l.crop} · {l.quantity_kg.toLocaleString()} kg · {t('dashboard.grade')} {l.grade}</div>
                     </div>
                   ))}
                 </div>

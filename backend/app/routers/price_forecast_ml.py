@@ -9,12 +9,16 @@ it loads artifacts produced by scripts/train_price_forecast.py.
   GET /forecast/ml/state     7-day-ahead STATEWIDE average forecast (separate model, models/price_forecast_state)
   GET /forecast/ml/compare   existing /market/compare result + forecast per market
 
-HONESTY: history comes ONLY from genuine live snapshots in market_prices
-(data_source="live"), exactly like the existing /forecast. Too little or stale
-history -> available:false with a reason, never a guess. `include_snapshot=true`
-explicitly replays the tail of the TRAINING dataset (flagged is_historical_replay).
+HONESTY: history comes from genuine live snapshots in market_prices
+(data_source="live"), exactly like the existing /forecast. When there is too little
+or stale live history the service falls back to replaying the tail of the TRAINING
+dataset; that result is ALWAYS flagged (is_historical_replay=true, history_source=
+"training_snapshot", plus a staleness warning) and is never used for the
+forecast_net_profit figures or the forecast ranking in /compare. No history at all,
+an unsupported crop, or an unknown market -> available:false with a reason.
 """
 import json
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -22,7 +26,11 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.mock_data.crops import CROP_BY_NAME
 from app.routers import market as market_router
+from app.routers.forecast import MIN_REAL_POINTS_FOR_FORECAST
+from app.services import forecast_availability, past_prices
 from app.services.transport_optimizer import net_profit_breakdown
+
+logger = logging.getLogger("cropretain.forecast_ml")
 
 router = APIRouter(prefix="/forecast/ml", tags=["forecast-ml"])
 
@@ -79,6 +87,36 @@ def _forecast_one(inf, db, crop, market, include_snapshot=False):
             "evaluated_on": "chronological held-out test split, all markets (not this market alone)",
         },
     }
+
+
+@router.get("/availability")
+def ml_availability(crop: str, market: str, db: Session = Depends(get_db)):
+    """What can honestly be shown for this crop + market, by scope. Recorded history (statewide /
+    market), live history count, the market-level ML model and the statewide ML model are reported
+    SEPARATELY -- having one never implies another. Runs no new model; computes nothing that is not
+    already available from the existing forecast/past-price paths."""
+    if crop not in CROP_BY_NAME:
+        raise HTTPException(status_code=404, detail="Unknown crop")
+    live = market_router._history_rows(db, crop, market, data_source="live")
+    state = past_prices.state_of(market)
+    inf = _service()
+
+    def _guard(fn):
+        try:
+            return fn()
+        except Exception:  # never turn a backend fault into a misleading "no data" answer
+            logger.exception("availability check failed for %s/%s", crop, market)
+            return None   # classify_ml reports this as status="service_error"
+
+    if inf is None:
+        market_ml = state_ml = _unavailable(crop, market, "ml_dependencies_missing",
+                                            "The ML packages are not installed on the server.")
+    else:
+        market_ml = _guard(lambda: _forecast_one(inf, db, crop, market))
+        state_ml = _guard(lambda: ml_state_forecast(crop, state)) if state else None
+    return forecast_availability.build_availability(
+        crop, market, live_rows=live, market_ml=market_ml, state_ml=state_ml,
+        min_live_points=MIN_REAL_POINTS_FOR_FORECAST)
 
 
 STATE_MAX_AGE_DAYS = 14   # state data comes from periodic report exports, so allow a little more age than live sync
@@ -197,7 +235,12 @@ def ml_compare(crop: str = Query(...), quantity_kg: float = Query(...), location
         fc = (_forecast_one(inf, db, crop, o["market"], include_snapshot) if inf else
               _unavailable(crop, o["market"], "ml_dependencies_missing", "pip install -r requirements-ml.txt"))
         entry = {**o, "ml_forecast": fc}
-        if fc["available"]:
+        if fc["available"] and fc.get("is_historical_replay"):
+            # A replay of the (stale) training data is shown as a flagged forecast,
+            # but it must NOT feed a net-profit figure or the market ranking: that
+            # would put 2025 prices next to today's distances and look like advice.
+            entry["forecast_net_note"] = "historical_replay_not_used"
+        elif fc["available"]:
             per_kg = fc["forecast"]["predicted_price_per_kg"]
             entry["forecast_net_profit"] = net_profit_breakdown(quantity_kg, per_kg, o["distance_km"])["net_profit"]
         options.append(entry)

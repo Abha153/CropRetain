@@ -45,15 +45,15 @@ const ML_COPY = {
   naive: 'If price stays the same',
   perQuintal: 'per quintal',
   caution: 'Measured on past data. It cannot see weather, policy or sudden supply shocks.',
-  unavailableTitle: 'No ML forecast for this crop and market yet',
+  unavailableTitle: (crop, market) => `No market-level ML forecast for ${crop} in ${market}`,
   reasons: {
-    insufficient_history: 'Needs at least 6 recorded prices in the last 28 days for this market. Prices build up as the app fetches live mandi data.',
+    insufficient_history: 'Needs at least 6 recorded prices in the last 28 days for this market, and no usable replay data exists for it. Live prices build up as the app fetches mandi data.',
     stale_history: 'The latest recorded price is too old to forecast from safely.',
     artifacts_missing: 'The model has not been trained on this server yet.',
     artifacts_invalid: 'The saved model does not match this version of the app. Retrain it.',
-    unsupported_crop: 'The model was not trained for this crop.',
+    unsupported_crop: 'The market-level model was not trained for this crop (too little validated data), so no prediction is made. Recorded prices, where they exist, are still shown in Past prices.',
     invalid_history: 'The recorded prices could not be used.',
-    ml_dependencies_missing: 'The ML packages are not installed on the server.',
+    ml_dependencies_missing: 'Server setup problem: the ML packages are not installed. This is not a data problem.',
   },
   warnings: {
     market_not_in_training_data: 'This market was not in the training data; the forecast uses only its own recent prices.',
@@ -66,6 +66,86 @@ function warningText(w) {
   const code = String(w).split(':')[0]
   const hit = Object.keys(ML_COPY.warnings).find(k => code.startsWith(k))
   return hit ? ML_COPY.warnings[hit] : null
+}
+
+const PAGE_COPY = {
+  subtitle: 'Recorded price history and, only where enough recent data and a validated model exist, a 7-day outlook. Availability differs by crop, market and scope.',
+}
+
+const ageWords = d => (d <= 0 ? 'today' : d === 1 ? 'yesterday' : d < 60 ? `${d} days ago` : d < 700 ? `${Math.round(d / 30)} months ago` : `${(d / 365).toFixed(1)} years ago`)
+const dateWords = d => new Date(`${d}T00:00:00Z`).toLocaleDateString('en-IN', { timeZone: 'UTC', day: 'numeric', month: 'short', year: 'numeric' })
+
+/** One plain-language line per ML status; `scope` is 'market' or 'state'. */
+function mlStatusText(m, crop, scopeName) {
+  if (!m) return 'Could not be checked (service error).'
+  switch (m.status) {
+    case 'available':
+      return m.is_historical_replay
+        ? `Historical replay only: built from prices up to ${m.as_of_date ? dateWords(m.as_of_date) : 'an old date'} (${m.history_age_days} days old). Not a current forecast.`
+        : `Available${m.as_of_date ? `, from prices up to ${dateWords(m.as_of_date)}` : ''}.`
+    case 'unsupported_crop': return `Not available: the model was not trained for ${crop} (too little validated data).`
+    case 'insufficient_history': return `Not available: not enough recent recorded prices for ${scopeName}.`
+    case 'stale_history': return `Not available: the newest recorded price for ${scopeName} is too old to forecast from.`
+    case 'no_state_history': return `Not available: no statewide price history for ${crop}.`
+    case 'no_state': return 'Not available: this market is not mapped to a state.'
+    case 'ml_dependencies_missing': return 'Server setup problem: the ML packages are not installed (not a data problem).'
+    case 'artifacts_missing': case 'artifacts_invalid': return 'Server setup problem: the saved model is missing or does not match this app version.'
+    case 'service_error': return 'Could not be checked (service error).'
+    default: return m.message || 'Not available.'
+  }
+}
+
+/** Replaces the old single "historical data unavailable" box: each scope is reported on its own line. */
+function AvailabilityPanel({ avail, error, crop, market, result }) {
+  if (error || !avail) {
+    return (
+      <div className="bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 text-red-700 dark:text-red-300 text-sm rounded-xl px-4 py-4 mb-8 flex items-start gap-2" role="alert">
+        <AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+        <div>Service error: could not check which price data and forecasts exist for {crop} in {market}. This does not mean there is no data. Try again in a moment.</div>
+      </div>
+    )
+  }
+  const st = avail.recorded_history.state, mk = avail.recorded_history.market, lv = avail.live_history
+  const stateName = avail.state || 'its state'
+  const noRecords = !st.available && !mk.available
+  const rows = [
+    {
+      k: `Recorded prices: ${stateName} average`,
+      v: st.available
+        ? `${st.n_points} recorded days, latest ₹${st.latest_price_per_kg}/kg on ${dateWords(st.latest_date)} (${ageWords(st.age_days)}). One average price per day for the whole state, not ${market}. Shown in Past prices below.`
+        : `None for ${crop} in ${stateName}.`,
+    },
+    {
+      k: `Recorded prices: ${market} market only`,
+      v: mk.available
+        ? `${mk.n_points} recorded days, newest ${dateWords(mk.latest_date)} (${ageWords(mk.age_days)})${mk.age_days > 90 ? ': old, so it cannot support a current forecast' : ''}.`
+        : `None for ${crop} in ${market}.`,
+    },
+    {
+      k: `7-day trend forecast (${market})`,
+      v: result?.reason === 'no_demo_data'
+        ? 'Demo simulation requested, but no synthetic demo series exists for this crop and market.'
+        : `Not available: needs at least ${lv.required_for_trend_forecast} live price snapshots for this exact market; ${lv.points} so far.`,
+    },
+    { k: `ML forecast (${market} market)`, v: mlStatusText(avail.market_ml, crop, market) },
+    { k: `ML forecast (${stateName} average)`, v: mlStatusText(avail.state_ml, crop, stateName) + (avail.state_ml?.status === 'available' && !avail.state_ml.is_historical_replay ? ' A statewide figure, not a prediction for this market; shown in Past prices below.' : '') },
+  ]
+  return (
+    <div className="bg-wheat/50 border border-black/5 text-sm rounded-xl px-4 py-4 mb-8 max-w-[90ch]">
+      <div className="flex items-start gap-2 font-semibold">
+        <Info size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+        <span>{noRecords ? `No recorded prices exist for ${crop} in ${market} or ${stateName}.` : `No 7-day trend forecast for ${crop} in ${market}. What exists at each scope:`}</span>
+      </div>
+      <dl className="mt-3 space-y-2">
+        {rows.map(r => (
+          <div key={r.k} className="grid sm:grid-cols-[250px_1fr] gap-x-4">
+            <dt className="text-ink/60">{r.k}</dt>
+            <dd className="text-ink/80">{r.v}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  )
 }
 
 const fmt = (n, d = 2) => (typeof n === 'number' && isFinite(n) ? n.toFixed(d) : '–')
@@ -90,6 +170,9 @@ export default function PriceForecast() {
   const [showDemo, setShowDemo] = useState(false)
   const [result, setResult] = useState(null)
   const [ml, setMl] = useState(null)
+  const [mlError, setMlError] = useState(false)
+  const [avail, setAvail] = useState(null)
+  const [availError, setAvailError] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -103,14 +186,16 @@ export default function PriceForecast() {
     setLoading(true)
     setError('')
     // ML forecast is additive: if the route is missing or fails, the page still works.
-    const mlPromise = api.getMlForecast(crop, market, showDemo).then(setMl).catch(() => setMl(null))
+    // Replay is automatic and always labelled by the backend; the demo toggle only affects the synthetic trend forecast.
+    const mlPromise = api.getMlForecast(crop, market).then(r => { setMl(r); setMlError(false) }).catch(() => { setMl(null); setMlError(true) })
+    const availPromise = api.getForecastAvailability(crop, market).then(a => { setAvail(a); setAvailError(false) }).catch(() => { setAvail(null); setAvailError(true) })
     try {
       const data = await api.getForecast(crop, market, showDemo)
       setResult(data)
     } catch (err) {
       setError(err.message)
     } finally {
-      await mlPromise
+      await Promise.all([mlPromise, availPromise])
       setLoading(false)
     }
   }
@@ -159,7 +244,7 @@ export default function PriceForecast() {
       {/* Title + one control strip: the question is "which crop, which market" */}
       <header className="mb-6 flex flex-col gap-1">
         <h1 className="font-display text-3xl md:text-4xl font-bold">{t('forecast.title')}</h1>
-        <p className="text-ink/60 max-w-[60ch]">{t('forecast.subtitle')}</p>
+        <p className="text-ink/60 max-w-[60ch]">{PAGE_COPY.subtitle}</p>
       </header>
 
       <form onSubmit={run} className="mb-8 flex flex-col md:flex-row md:items-end gap-3 md:gap-4 border-y border-black/5 py-4">
@@ -187,15 +272,7 @@ export default function PriceForecast() {
       {error && <div className="bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 text-red-700 dark:text-red-300 text-sm rounded-lg px-3 py-2 mb-4" role="alert">{error}</div>}
       {loading && <LoadingSpinner label={t('forecast.running')} />}
 
-      {result && !loading && !ok && (
-        <div className="bg-wheat/50 border border-black/5 text-ink/60 text-sm rounded-xl px-4 py-4 mb-8 flex items-start gap-2">
-          <Info size={16} className="mt-0.5 shrink-0" />
-          <div>
-            {t('forecast.historyUnavailable')}
-            {!showDemo && <div className="mt-2 text-xs text-ink/50">{t('forecast.noHistoryHelp')}</div>}
-          </div>
-        </div>
-      )}
+      {result && !loading && !ok && <AvailabilityPanel avail={avail} error={availError} crop={crop} market={market} result={result} />}
 
       {ok && !loading && (
         <>
@@ -295,7 +372,13 @@ export default function PriceForecast() {
 
       <PastPrices crop={crop} market={market} cropLabel={getLocalizedCropName(crop, t)} />
 
-      {!loading && ml && <MlPanel ml={ml} currentKg={ok ? current : null} />}
+      {!loading && ml && <MlPanel ml={ml} crop={crop} market={market} currentKg={ok ? current : null} />}
+      {!loading && !ml && mlError && (
+        <div className="text-sm text-ink/70 flex items-start gap-2 mb-10 max-w-[80ch]" role="alert">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
+          <span>Service error: the ML forecast could not be loaded. This does not mean no forecast exists. Try again in a moment.</span>
+        </div>
+      )}
       {/* Fetched once, independent of the crop/market form; it only highlights the selected crop. */}
       <MlAnalysis crop={crop} />
     </div>
@@ -335,13 +418,13 @@ function ChartTip({ active, payload, label, t, dark }) {
   )
 }
 
-function MlPanel({ ml, currentKg }) {
+function MlPanel({ ml, crop, market, currentKg }) {
   const fc = ml.forecast
   return (
     <section className="border-t border-black/5 pt-8 mb-10" aria-labelledby="ml-heading">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-5">
         <h2 id="ml-heading" className="font-display text-xl font-bold">{ML_COPY.heading}</h2>
-        <span className="text-sm text-ink/50">{ML_COPY.sub}</span>
+        <span className="text-sm text-ink/50">{ML_COPY.sub} · {market} market</span>
         {ml.available && (
           <span className={`text-xs font-semibold rounded-full px-2.5 py-0.5 ${ml.is_historical_replay ? 'bg-amber-100 text-amber-800' : 'bg-gain/15 text-gain'}`}>
             {ml.is_historical_replay ? ML_COPY.replay : ML_COPY.live}
@@ -353,7 +436,7 @@ function MlPanel({ ml, currentKg }) {
         <div className="bg-wheat/50 border border-black/5 rounded-xl px-4 py-4 text-sm flex items-start gap-2 max-w-[80ch]">
           <Info size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
           <div>
-            <div className="font-semibold">{ML_COPY.unavailableTitle}</div>
+            <div className="font-semibold">{ML_COPY.unavailableTitle(crop, market)}</div>
             <div className="text-ink/60 mt-1">{ML_COPY.reasons[ml.reason] || ml.message}</div>
           </div>
         </div>
