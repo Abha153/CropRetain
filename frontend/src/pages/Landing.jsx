@@ -2,7 +2,7 @@ import React from 'react'
 import { Link } from 'react-router-dom'
 import {
   Sprout, BarChart3, Handshake, Truck, Wallet, ArrowRight,
-  TrendingUp, Bot, LineChart, Store, Users, ShieldCheck,
+  TrendingUp, Bot, LineChart, Store, Users, ShieldCheck, MapPin,
 } from 'lucide-react'
 import PriceTicker from '../components/PriceTicker'
 import LanguageSelector from '../components/LanguageSelector'
@@ -29,6 +29,11 @@ const FEATURES = [
   { icon: Store, titleKey: 'landing.featureMarketplace', descKey: 'landing.featureMarketplaceDesc' },
   { icon: Users, titleKey: 'landing.featureBuyerMatching', descKey: 'landing.featureBuyerMatchingDesc' },
   { icon: Truck, titleKey: 'landing.featureFarmPool', descKey: 'landing.featureFarmPoolDesc' },
+  { icon: Sprout, titleKey: 'landing.featureSoilIntelligence', descKey: 'landing.featureSoilIntelligenceDesc' },
+  // Farm Profile (saved farms, plots and soil-test history) is not built yet,
+  // so the card says so rather than advertising it as available.
+  { icon: MapPin, titleKey: 'landing.featureFarmProfile', descKey: 'landing.featureFarmProfileDesc', soon: true },
+  { icon: BarChart3, titleKey: 'landing.featureCropPlanning', descKey: 'landing.featureCropPlanningDesc' },
 ]
 
 const STEPS = [
@@ -229,7 +234,14 @@ export default function Landing() {
               <div className="w-11 h-11 rounded-xl bg-forest/10 dark:bg-forest-light/15 text-forest dark:text-forest-light flex items-center justify-center mb-4">
                 <f.icon size={20} />
               </div>
-              <h3 className="font-display font-semibold text-lg mb-2">{t(f.titleKey)}</h3>
+              <h3 className="font-display font-semibold text-lg mb-2">
+                {t(f.titleKey)}
+                {f.soon && (
+                  <span className="ml-2 align-middle text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-marigold/15 text-marigold-dark border border-marigold/40">
+                    {t('landing.comingSoon')}
+                  </span>
+                )}
+              </h3>
               <p className="text-sm text-ink/60 dark:text-paper/60 leading-relaxed">{t(f.descKey)}</p>
             </div>
           ))}

@@ -14,6 +14,7 @@ import LoadingSpinner from '../components/LoadingSpinner'
 import SellingJourney from '../components/SellingJourney'
 import WeatherCard from '../components/WeatherCard'
 import BestSellingOpportunity from '../components/BestSellingOpportunity'
+import FarmHealthCard from '../components/FarmHealthCard'
 import { selectFocusJourney } from '../utils/sellingJourney'
 
 const TXN_STATUS_TONE = {
@@ -171,6 +172,9 @@ export default function FarmerDashboard() {
           )}
         </div>
       </div>
+
+      {/* Farm Health & Soil -- compact summary; honest empty state until soil data is stored */}
+      <FarmHealthCard user={user} />
 
       {/* Selling Journey -- premium dark hero treatment */}
       {journey && <SellingJourney journey={journey} dark />}
