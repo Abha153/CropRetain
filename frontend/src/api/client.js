@@ -123,6 +123,11 @@ export const api = {
   // ML forecast (separate route; see backend docs/ML_PRICE_FORECAST.md). includeSnapshot = explicit historical replay.
   getMlForecast: (crop, market, includeSnapshot = false) => request(`/forecast/ml?crop=${encodeURIComponent(crop)}&market=${encodeURIComponent(market)}&include_snapshot=${includeSnapshot}`),
   // Precomputed held-out-test analysis of the ML forecast (baselines, per-crop/state error, drivers).
+  // Existing market comparison + a 7-day ML forecast (and forecast net return) per market.
+  getMlCompare: (crop, quantityKg, location) => request(`/forecast/ml/compare?crop=${encodeURIComponent(crop)}&quantity_kg=${quantityKg}&location=${encodeURIComponent(location)}`),
+  getMlStatus: () => request('/forecast/ml/status'),
+  // What can honestly be shown for this crop+market, by scope (recorded history / live history / market ML / statewide ML).
+  getForecastAvailability: (crop, market) => request(`/forecast/ml/availability?crop=${encodeURIComponent(crop)}&market=${encodeURIComponent(market)}`),
   getMlAnalysis: () => request('/forecast/ml/analysis'),
   // Next-7-day STATEWIDE average forecast (separate model trained on state-level daily averages).
   getMlStateForecast: (crop, state) => request(`/forecast/ml/state?crop=${encodeURIComponent(crop)}&state=${encodeURIComponent(state)}`),

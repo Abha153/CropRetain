@@ -70,6 +70,7 @@ function useNavGroups(role, t) {
       heading: t('navOverview'),
       links: [
         { to: '/farmer/dashboard', label: t('navDashboard'), Icon: Home },
+        { to: '/soil-advisor', label: t('navSoilIntelligence'), Icon: Sprout },
         { to: '/market-intelligence', label: t('navMarket'), Icon: BarChart3 },
         { to: '/forecast', label: t('navForecast'), Icon: TrendingUp },
         { to: '/arrivals', label: t('navArrival'), Icon: Package },
@@ -88,7 +89,6 @@ function useNavGroups(role, t) {
     {
       heading: t('navDecisionTools'),
       links: [
-        { to: '/soil-advisor', label: t('navSoil'), Icon: Sprout },
         { to: '/profit-calculator', label: t('navProfit'), Icon: Calculator },
         { to: '/transport', label: t('navTransport'), Icon: Truck },
         { to: '/farmpool', label: t('navFarmPool'), Icon: Users },

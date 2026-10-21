@@ -158,3 +158,33 @@ def test_state_forecast_endpoint(tmp_path, monkeypatch):
     # data that is too old is refused, not forecast
     monkeypatch.setattr(r, "STATE_MAX_AGE_DAYS", 1)
     assert r.ml_state_forecast(crop="Onion", state="Maharashtra")["reason"] == "stale_history"
+
+
+def test_compare_never_builds_net_profit_or_ranking_from_historical_replay(db, art_dir, monkeypatch):
+    """A replay of stale training data may be SHOWN (flagged) but must not become a
+    forecast net profit or drive forecast_recommended_market."""
+    monkeypatch.setenv("PRICE_FORECAST_ARTIFACT_DIR", str(art_dir))
+    for m in ("Bilaspur", "Raipur"):
+        db.add(models.MarketPrice(crop="Tomato", market=m, date=dt.date.today().isoformat(),
+                                  min_price=2150, max_price=2250, modal_price=2200, data_source="live"))
+    db.commit()
+    replay = {"crop": "Tomato", "market": "x", "available": True, "is_historical_replay": True,
+              "history_source": "training_snapshot",
+              "forecast": {"predicted_price_per_kg": 99.0, "horizon_days": 7}}
+    monkeypatch.setattr(r, "_forecast_one", lambda *a, **k: dict(replay))
+    out = r.ml_compare("Tomato", 1000.0, "Bilaspur", 6, False, db)
+    assert out["options"], "comparison itself must still work"
+    for o in out["options"]:
+        assert o["ml_forecast"]["is_historical_replay"] is True      # still shown, still flagged
+        assert "forecast_net_profit" not in o                         # but never turned into money
+        assert o["forecast_net_note"] == "historical_replay_not_used"
+    assert out["forecast_ranking"] == [] and out["forecast_recommended_market"] is None
+    assert out["forecast_coverage"].startswith("0 of")
+
+
+def test_compare_still_uses_live_forecasts_for_net_profit(db, art_dir, monkeypatch):
+    monkeypatch.setenv("PRICE_FORECAST_ARTIFACT_DIR", str(art_dir))
+    _seed_live(db, market="Bilaspur")
+    out = r.ml_compare("Tomato", 1000.0, "Bilaspur", 6, False, db)
+    live = [o for o in out["options"] if o["ml_forecast"].get("available") and not o["ml_forecast"].get("is_historical_replay")]
+    assert live and all("forecast_net_profit" in o for o in live)
