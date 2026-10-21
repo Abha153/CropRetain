@@ -1,0 +1,1150 @@
+diff --git a/frontend/src/api/client.js b/frontend/src/api/client.js
+index d26f209..34169a6 100644
+--- a/frontend/src/api/client.js
++++ b/frontend/src/api/client.js
+@@ -123,6 +123,11 @@ export const api = {
+   // ML forecast (separate route; see backend docs/ML_PRICE_FORECAST.md). includeSnapshot = explicit historical replay.
+   getMlForecast: (crop, market, includeSnapshot = false) => request(`/forecast/ml?crop=${encodeURIComponent(crop)}&market=${encodeURIComponent(market)}&include_snapshot=${includeSnapshot}`),
+   // Precomputed held-out-test analysis of the ML forecast (baselines, per-crop/state error, drivers).
++  // Existing market comparison + a 7-day ML forecast (and forecast net return) per market.
++  getMlCompare: (crop, quantityKg, location) => request(`/forecast/ml/compare?crop=${encodeURIComponent(crop)}&quantity_kg=${quantityKg}&location=${encodeURIComponent(location)}`),
++  getMlStatus: () => request('/forecast/ml/status'),
++  // What can honestly be shown for this crop+market, by scope (recorded history / live history / market ML / statewide ML).
++  getForecastAvailability: (crop, market) => request(`/forecast/ml/availability?crop=${encodeURIComponent(crop)}&market=${encodeURIComponent(market)}`),
+   getMlAnalysis: () => request('/forecast/ml/analysis'),
+   // Next-7-day STATEWIDE average forecast (separate model trained on state-level daily averages).
+   getMlStateForecast: (crop, state) => request(`/forecast/ml/state?crop=${encodeURIComponent(crop)}&state=${encodeURIComponent(state)}`),
+diff --git a/frontend/src/components/MlForecastCard.jsx b/frontend/src/components/MlForecastCard.jsx
+new file mode 100644
+index 0000000..21eb5b7
+--- /dev/null
++++ b/frontend/src/components/MlForecastCard.jsx
+@@ -0,0 +1,125 @@
++import React from 'react'
++import { Link } from 'react-router-dom'
++import { Info, AlertTriangle, ArrowRight, Cpu } from 'lucide-react'
++import Badge from './Badge'
++import { useI18n } from '../i18n/I18nContext'
++
++/**
++ * 7-day ML price forecast for the farmer dashboard.
++ *
++ * It only DISPLAYS what GET /forecast/ml(/compare) returns. When the backend
++ * answers `available: false` the card says WHY (unsupported crop, ML libraries
++ * not installed, no live history, ...) and shows no number. Replayed historical
++ * data is shown only under an explicit "not a prediction for next week" banner.
++ * Nothing is ever estimated here. `status` is GET /forecast/ml/status, used for
++ * the model line so anyone can verify what is actually running.
++ */
++const fmt = (n) => Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 })
++const KNOWN_REASONS = ['unsupported_crop', 'ml_dependencies_missing', 'artifacts_missing',
++  'insufficient_history', 'stale_history', 'unknown_market', 'request_failed']
++
++export default function MlForecastCard({ forecast, status, crop, market, loading }) {
++  const { t } = useI18n()
++  const shell = 'bg-white dark:bg-white/5 rounded-2xl shadow-card border border-black/5 dark:border-white/10 p-5 md:p-6'
++  const replay = !!forecast?.available && !!forecast.is_historical_replay
++
++  // Backend warning codes -> readable text (unknown codes are shown as sent).
++  const warningText = (w) => {
++    if (w === 'model_did_not_beat_persistence_baseline_on_test_split') return t('dashboard.mlForecast.warn.baseline')
++    const age = /^historical_replay.*?(\d+)\s*days old/.exec(w)
++    if (age) return t('dashboard.mlForecast.warn.replayAge', { days: age[1] })
++    return w
++  }
++
++  const reason = forecast?.reason
++  const reasonText = KNOWN_REASONS.includes(reason)
++    ? t(`dashboard.mlForecast.reason.${reason}`, { crop: crop || '' })
++    : t('dashboard.mlForecast.unavailableNote')
++
++  return (
++    <div className={shell} data-testid="ml-forecast-card">
++      <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
++        <h2 className="font-display font-semibold text-lg">
++          {t('dashboard.mlForecast.title')}{crop && market ? ` · ${crop}, ${market}` : ''}
++        </h2>
++        {forecast?.available && (
++          <Badge tone={replay ? 'warning' : 'success'}>
++            {replay ? t('dashboard.mlForecast.replay') : t('dashboard.mlForecast.live')}
++          </Badge>
++        )}
++      </div>
++
++      {loading ? (
++        <p className="text-sm text-ink/40 dark:text-paper/40 py-6 text-center">{t('common.loading')}</p>
++      ) : !forecast || !forecast.available ? (
++        <div className="mt-3 flex items-start gap-2 text-sm bg-wheat/50 dark:bg-white/5 rounded-xl px-4 py-3" data-testid="ml-unavailable">
++          <Info size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
++          <div>
++            <div className="font-semibold">{t('dashboard.mlForecast.unavailable')}</div>
++            <div className="text-ink/70 dark:text-paper/70 mt-0.5">{reasonText}</div>
++            {reason === 'unsupported_crop' && status?.crops?.length > 0 && (
++              <div className="text-xs text-ink/50 dark:text-paper/50 mt-1">
++                {t('dashboard.mlForecast.covers', { crops: status.crops.join(', ') })}
++              </div>
++            )}
++          </div>
++        </div>
++      ) : (
++        <>
++          {replay && (
++            <div className="mt-3 flex items-start gap-2 text-sm bg-amber-50 dark:bg-amber-500/10 text-amber-900 dark:text-amber-200 rounded-xl px-4 py-3" data-testid="ml-replay-banner">
++              <AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
++              <span>{t('dashboard.mlForecast.replayBanner', { asOf: forecast.forecast.as_of_date })}</span>
++            </div>
++          )}
++          <div className={`grid sm:grid-cols-2 gap-x-8 gap-y-4 mt-3 ${replay ? 'opacity-70' : ''}`}>
++            <div>
++              <div className="text-xs text-ink/50 dark:text-paper/50">
++                {t('dashboard.mlForecast.predicted', { date: forecast.forecast.target_date })}
++              </div>
++              <div className="font-display font-mono-data text-3xl font-bold">
++                ₹{fmt(forecast.forecast.predicted_price_per_kg)}<span className="text-base font-medium text-ink/50 dark:text-paper/50">/kg</span>
++              </div>
++            </div>
++            <div>
++              <div className="text-xs text-ink/50 dark:text-paper/50">{t('dashboard.mlForecast.range')}</div>
++              <div className="font-mono-data text-lg font-semibold">
++                ₹{fmt(forecast.forecast.predicted_price_low / 100)}–{fmt(forecast.forecast.predicted_price_high / 100)}/kg
++              </div>
++            </div>
++          </div>
++          {forecast.forecast.warnings?.length > 0 && (
++            <ul className="text-xs text-amber-800 dark:text-amber-300 mt-3 space-y-1">
++              {forecast.forecast.warnings.map((w) => (
++                <li key={w} className="flex items-start gap-1.5">
++                  <AlertTriangle size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
++                  <span>{warningText(w)}</span>
++                </li>
++              ))}
++            </ul>
++          )}
++          {forecast.model?.test_mae_inr_per_quintal != null && (
++            <p className="text-xs text-ink/50 dark:text-paper/50 mt-3">
++              {t('dashboard.mlForecast.error', { mae: fmt(forecast.model.test_mae_inr_per_quintal) })}
++            </p>
++          )}
++          <p className="text-[11px] text-ink/40 dark:text-paper/40 mt-1">{t('dashboard.mlForecast.caution')}</p>
++        </>
++      )}
++
++      {/* Verifiable model line: what is actually running on THIS server */}
++      <p className="flex items-start gap-1.5 text-[11px] text-ink/50 dark:text-paper/50 mt-3" data-testid="ml-model-line">
++        <Cpu size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
++        <span>
++          {status?.available
++            ? t('dashboard.mlForecast.modelLine', { label: status.model_label, days: status.horizon_days, until: status.data_date_range?.[1] || '—' })
++            : t('dashboard.mlForecast.statusDown', { reason: status?.reason || 'unreachable' })}
++        </span>
++      </p>
++
++      <Link to="/forecast" className="inline-flex items-center gap-1 text-sm font-semibold text-forest dark:text-forest-light hover:underline mt-3">
++        {t('dashboard.mlForecast.fullForecast')} <ArrowRight size={14} />
++      </Link>
++    </div>
++  )
++}
+diff --git a/frontend/src/components/PastPrices.jsx b/frontend/src/components/PastPrices.jsx
+index 6812a0e..abcaec4 100644
+--- a/frontend/src/components/PastPrices.jsx
++++ b/frontend/src/components/PastPrices.jsx
+@@ -228,6 +228,7 @@ export default function PastPrices({ crop, market, cropLabel }) {
+ 
+   const rows = useMemo(() => (data?.available ? toRows(data.points, data.gaps) : []), [data])
+   const name = cropLabel || crop
++  const where = data?.scope === 'state' ? `${data.state} (statewide average)` : market
+ 
+   return (
+     <section className="mb-10" aria-labelledby="past-prices-h">
+@@ -293,7 +294,7 @@ export default function PastPrices({ crop, market, cropLabel }) {
+             {asTable ? (
+               <div className="overflow-x-auto max-h-80 overflow-y-auto">
+                 <table className="w-full text-xs border-collapse">
+-                  <caption className="sr-only">Recorded prices for {name} in {market}</caption>
++                  <caption className="sr-only">Recorded prices for {name}: {where}</caption>
+                   <thead>
+                     <tr className="text-left text-ink/60">
+                       {['Date', '₹ per kg', '₹ per quintal', 'Source'].map(h => <th key={h} scope="col" className="font-semibold py-1.5 pr-4 border-b border-black/10 whitespace-nowrap">{h}</th>)}
+@@ -312,7 +313,7 @@ export default function PastPrices({ crop, market, cropLabel }) {
+                 </table>
+               </div>
+             ) : (
+-              <div role="img" aria-label={`Line chart of recorded ${name} prices in ${market}, ${s.n_points} days from ${fmtDate(s.first_date)} to ${fmtDate(latest.date)}`}>
++              <div role="img" aria-label={`Line chart of recorded ${name} prices, ${where}, ${s.n_points} days from ${fmtDate(s.first_date)} to ${fmtDate(latest.date)}`}>
+                 <Chart rows={rows} gaps={data.gaps} c={c} />
+               </div>
+             )}
+diff --git a/frontend/src/i18n/translations/as.json b/frontend/src/i18n/translations/as.json
+index eebc008..1b1e035 100644
+--- a/frontend/src/i18n/translations/as.json
++++ b/frontend/src/i18n/translations/as.json
+@@ -1574,5 +1574,30 @@
+   "dashboard.soilCard.sensors": "পথাৰৰ ছেন্সৰ",
+   "dashboard.soilCard.noSensors": "কোনো সংযুক্ত হোৱা নাই (ঐচ্ছিক)",
+   "dashboard.soilCard.emptyBody": "আপোনাৰ মাটিৰ pH, গঠন আৰু ঋতু লিখক আৰু চাওক কোনবোৰ শস্য উদ্ধৃত নিৰ্দেশনাৰ সৈতে মিলে আৰু ওচৰৰ বজাৰত সেইবোৰৰ পৰা কিমান উপাৰ্জন হ'ব পাৰে। মাটি পৰীক্ষাৰ ইতিহাস সংৰক্ষণৰ সুবিধা সোনকালে আহিব।",
+-  "dashboard.soilCard.cta": "মাটি ইণ্টেলিজেন্স খোলক"
++  "dashboard.soilCard.cta": "মাটি ইণ্টেলিজেন্স খোলক",
++  "dashboard.mlForecast.title": "7-day ML price forecast",
++  "dashboard.mlForecast.predicted": "Predicted modal price for {{date}}",
++  "dashboard.mlForecast.range": "Likely range",
++  "dashboard.mlForecast.error": "Model error on held-out test data: ₹{{mae}} per quintal (all markets, not this market alone)",
++  "dashboard.mlForecast.live": "Based on live market data",
++  "dashboard.mlForecast.replay": "Historical replay, not live data",
++  "dashboard.mlForecast.unavailable": "Forecast unavailable",
++  "dashboard.mlForecast.unavailableNote": "There is not enough recent live price history for this crop and market, so no forecast is shown rather than a guess.",
++  "dashboard.mlForecast.fullForecast": "Full forecast",
++  "dashboard.mlForecast.caution": "A statistical estimate, not a guarantee. Actual prices can differ.",
++  "dashboard.mlCompare.forecastNet": "7-day forecast net",
++  "dashboard.mlCompare.coverage": "Forecast covers {{coverage}} markets",
++  "dashboard.mlForecast.reason.unsupported_crop": "The trained model does not cover {{crop}} yet.",
++  "dashboard.mlForecast.reason.ml_dependencies_missing": "The ML libraries are not installed on this server.",
++  "dashboard.mlForecast.reason.artifacts_missing": "The trained model files are missing on this server.",
++  "dashboard.mlForecast.reason.insufficient_history": "There is no recent live price history for this crop and market.",
++  "dashboard.mlForecast.reason.stale_history": "The latest live price is too old to forecast from safely.",
++  "dashboard.mlForecast.reason.unknown_market": "This market is not in the model's training data.",
++  "dashboard.mlForecast.reason.request_failed": "The forecast service could not be reached.",
++  "dashboard.mlForecast.covers": "Model covers: {{crops}}",
++  "dashboard.mlForecast.replayBanner": "Replay of older data (as of {{asOf}}), not a prediction for next week.",
++  "dashboard.mlForecast.warn.baseline": "On test data this model did not beat the “price stays the same” baseline.",
++  "dashboard.mlForecast.warn.replayAge": "The latest price in this replay is {{days}} days old.",
++  "dashboard.mlForecast.modelLine": "Model: {{label}} · {{days}}-day horizon · trained on data up to {{until}}",
++  "dashboard.mlForecast.statusDown": "ML status: {{reason}}"
+ }
+diff --git a/frontend/src/i18n/translations/bho.json b/frontend/src/i18n/translations/bho.json
+index 93e969a..df891a8 100644
+--- a/frontend/src/i18n/translations/bho.json
++++ b/frontend/src/i18n/translations/bho.json
+@@ -1574,5 +1574,30 @@
+   "dashboard.soilCard.sensors": "खेत के सेंसर",
+   "dashboard.soilCard.noSensors": "कवनो जुड़ल नइखे (वैकल्पिक)",
+   "dashboard.soilCard.emptyBody": "आपन माटी के pH, बनावट आ मौसम भरीं आ देखीं कि कवन फसल स्रोत-सहित सलाह से मेल खात बा आ लगे के बाजार में कतना कमाई हो सकेला। माटी-जाँच के इतिहास सहेजे के सुविधा जल्दिए आवत बा।",
+-  "dashboard.soilCard.cta": "माटी इंटेलिजेंस खोलीं"
++  "dashboard.soilCard.cta": "माटी इंटेलिजेंस खोलीं",
++  "dashboard.mlForecast.title": "7-day ML price forecast",
++  "dashboard.mlForecast.predicted": "Predicted modal price for {{date}}",
++  "dashboard.mlForecast.range": "Likely range",
++  "dashboard.mlForecast.error": "Model error on held-out test data: ₹{{mae}} per quintal (all markets, not this market alone)",
++  "dashboard.mlForecast.live": "Based on live market data",
++  "dashboard.mlForecast.replay": "Historical replay, not live data",
++  "dashboard.mlForecast.unavailable": "Forecast unavailable",
++  "dashboard.mlForecast.unavailableNote": "There is not enough recent live price history for this crop and market, so no forecast is shown rather than a guess.",
++  "dashboard.mlForecast.fullForecast": "Full forecast",
++  "dashboard.mlForecast.caution": "A statistical estimate, not a guarantee. Actual prices can differ.",
++  "dashboard.mlCompare.forecastNet": "7-day forecast net",
++  "dashboard.mlCompare.coverage": "Forecast covers {{coverage}} markets",
++  "dashboard.mlForecast.reason.unsupported_crop": "The trained model does not cover {{crop}} yet.",
++  "dashboard.mlForecast.reason.ml_dependencies_missing": "The ML libraries are not installed on this server.",
++  "dashboard.mlForecast.reason.artifacts_missing": "The trained model files are missing on this server.",
++  "dashboard.mlForecast.reason.insufficient_history": "There is no recent live price history for this crop and market.",
++  "dashboard.mlForecast.reason.stale_history": "The latest live price is too old to forecast from safely.",
++  "dashboard.mlForecast.reason.unknown_market": "This market is not in the model's training data.",
++  "dashboard.mlForecast.reason.request_failed": "The forecast service could not be reached.",
++  "dashboard.mlForecast.covers": "Model covers: {{crops}}",
++  "dashboard.mlForecast.replayBanner": "Replay of older data (as of {{asOf}}), not a prediction for next week.",
++  "dashboard.mlForecast.warn.baseline": "On test data this model did not beat the “price stays the same” baseline.",
++  "dashboard.mlForecast.warn.replayAge": "The latest price in this replay is {{days}} days old.",
++  "dashboard.mlForecast.modelLine": "Model: {{label}} · {{days}}-day horizon · trained on data up to {{until}}",
++  "dashboard.mlForecast.statusDown": "ML status: {{reason}}"
+ }
+diff --git a/frontend/src/i18n/translations/bn.json b/frontend/src/i18n/translations/bn.json
+index 88c990e..14bfbe4 100644
+--- a/frontend/src/i18n/translations/bn.json
++++ b/frontend/src/i18n/translations/bn.json
+@@ -1574,5 +1574,30 @@
+   "dashboard.soilCard.sensors": "মাঠের সেন্সর",
+   "dashboard.soilCard.noSensors": "কোনোটি যুক্ত নেই (ঐচ্ছিক)",
+   "dashboard.soilCard.emptyBody": "আপনার মাটির pH, গঠন ও মৌসুম লিখুন এবং দেখুন কোন ফসল উদ্ধৃত নির্দেশিকার সঙ্গে মেলে এবং কাছের বাজারে তা থেকে কত আয় হতে পারে। মাটি পরীক্ষার ইতিহাস সংরক্ষণের সুবিধা শীঘ্রই আসছে।",
+-  "dashboard.soilCard.cta": "মাটি ইন্টেলিজেন্স খুলুন"
++  "dashboard.soilCard.cta": "মাটি ইন্টেলিজেন্স খুলুন",
++  "dashboard.mlForecast.title": "7-day ML price forecast",
++  "dashboard.mlForecast.predicted": "Predicted modal price for {{date}}",
++  "dashboard.mlForecast.range": "Likely range",
++  "dashboard.mlForecast.error": "Model error on held-out test data: ₹{{mae}} per quintal (all markets, not this market alone)",
++  "dashboard.mlForecast.live": "Based on live market data",
++  "dashboard.mlForecast.replay": "Historical replay, not live data",
++  "dashboard.mlForecast.unavailable": "Forecast unavailable",
++  "dashboard.mlForecast.unavailableNote": "There is not enough recent live price history for this crop and market, so no forecast is shown rather than a guess.",
++  "dashboard.mlForecast.fullForecast": "Full forecast",
++  "dashboard.mlForecast.caution": "A statistical estimate, not a guarantee. Actual prices can differ.",
++  "dashboard.mlCompare.forecastNet": "7-day forecast net",
++  "dashboard.mlCompare.coverage": "Forecast covers {{coverage}} markets",
++  "dashboard.mlForecast.reason.unsupported_crop": "The trained model does not cover {{crop}} yet.",
++  "dashboard.mlForecast.reason.ml_dependencies_missing": "The ML libraries are not installed on this server.",
++  "dashboard.mlForecast.reason.artifacts_missing": "The trained model files are missing on this server.",
++  "dashboard.mlForecast.reason.insufficient_history": "There is no recent live price history for this crop and market.",
++  "dashboard.mlForecast.reason.stale_history": "The latest live price is too old to forecast from safely.",
++  "dashboard.mlForecast.reason.unknown_market": "This market is not in the model's training data.",
++  "dashboard.mlForecast.reason.request_failed": "The forecast service could not be reached.",
++  "dashboard.mlForecast.covers": "Model covers: {{crops}}",
++  "dashboard.mlForecast.replayBanner": "Replay of older data (as of {{asOf}}), not a prediction for next week.",
++  "dashboard.mlForecast.warn.baseline": "On test data this model did not beat the “price stays the same” baseline.",
++  "dashboard.mlForecast.warn.replayAge": "The latest price in this replay is {{days}} days old.",
++  "dashboard.mlForecast.modelLine": "Model: {{label}} · {{days}}-day horizon · trained on data up to {{until}}",
++  "dashboard.mlForecast.statusDown": "ML status: {{reason}}"
+ }
+diff --git a/frontend/src/i18n/translations/en.json b/frontend/src/i18n/translations/en.json
+index c268c92..59cb1dd 100644
+--- a/frontend/src/i18n/translations/en.json
++++ b/frontend/src/i18n/translations/en.json
+@@ -1574,5 +1574,30 @@
+   "dashboard.soilCard.sensors": "Field sensors",
+   "dashboard.soilCard.noSensors": "None connected (optional)",
+   "dashboard.soilCard.emptyBody": "Enter your soil pH, texture and season to see which crops match cited guidance and what they could earn at nearby markets. Saving soil-test history is coming soon.",
+-  "dashboard.soilCard.cta": "Open Soil Intelligence"
++  "dashboard.soilCard.cta": "Open Soil Intelligence",
++  "dashboard.mlForecast.title": "7-day ML price forecast",
++  "dashboard.mlForecast.predicted": "Predicted modal price for {{date}}",
++  "dashboard.mlForecast.range": "Likely range",
++  "dashboard.mlForecast.error": "Model error on held-out test data: ₹{{mae}} per quintal (all markets, not this market alone)",
++  "dashboard.mlForecast.live": "Based on live market data",
++  "dashboard.mlForecast.replay": "Historical replay, not live data",
++  "dashboard.mlForecast.unavailable": "Forecast unavailable",
++  "dashboard.mlForecast.unavailableNote": "There is not enough recent live price history for this crop and market, so no forecast is shown rather than a guess.",
++  "dashboard.mlForecast.fullForecast": "Full forecast",
++  "dashboard.mlForecast.caution": "A statistical estimate, not a guarantee. Actual prices can differ.",
++  "dashboard.mlCompare.forecastNet": "7-day forecast net",
++  "dashboard.mlCompare.coverage": "Forecast covers {{coverage}} markets",
++  "dashboard.mlForecast.reason.unsupported_crop": "The trained model does not cover {{crop}} yet.",
++  "dashboard.mlForecast.reason.ml_dependencies_missing": "The ML libraries are not installed on this server.",
++  "dashboard.mlForecast.reason.artifacts_missing": "The trained model files are missing on this server.",
++  "dashboard.mlForecast.reason.insufficient_history": "There is no recent live price history for this crop and market.",
++  "dashboard.mlForecast.reason.stale_history": "The latest live price is too old to forecast from safely.",
++  "dashboard.mlForecast.reason.unknown_market": "This market is not in the model's training data.",
++  "dashboard.mlForecast.reason.request_failed": "The forecast service could not be reached.",
++  "dashboard.mlForecast.covers": "Model covers: {{crops}}",
++  "dashboard.mlForecast.replayBanner": "Replay of older data (as of {{asOf}}), not a prediction for next week.",
++  "dashboard.mlForecast.warn.baseline": "On test data this model did not beat the “price stays the same” baseline.",
++  "dashboard.mlForecast.warn.replayAge": "The latest price in this replay is {{days}} days old.",
++  "dashboard.mlForecast.modelLine": "Model: {{label}} · {{days}}-day horizon · trained on data up to {{until}}",
++  "dashboard.mlForecast.statusDown": "ML status: {{reason}}"
+ }
+diff --git a/frontend/src/i18n/translations/gu.json b/frontend/src/i18n/translations/gu.json
+index 47681d2..c618f68 100644
+--- a/frontend/src/i18n/translations/gu.json
++++ b/frontend/src/i18n/translations/gu.json
+@@ -1574,5 +1574,30 @@
+   "dashboard.soilCard.sensors": "ખેતરના સેન્સર",
+   "dashboard.soilCard.noSensors": "કોઈ જોડાયેલ નથી (વૈકલ્પિક)",
+   "dashboard.soilCard.emptyBody": "તમારી માટીનો pH, બંધારણ અને ઋતુ દાખલ કરો અને જુઓ કે કયા પાક સંદર્ભિત માર્ગદર્શન સાથે મેળ ખાય છે અને નજીકના બજારોમાં તેમાંથી કેટલી કમાણી થઈ શકે. માટી-પરીક્ષણનો ઇતિહાસ સાચવવાની સુવિધા ટૂંક સમયમાં આવી રહી છે.",
+-  "dashboard.soilCard.cta": "માટી ઇન્ટેલિજન્સ ખોલો"
++  "dashboard.soilCard.cta": "માટી ઇન્ટેલિજન્સ ખોલો",
++  "dashboard.mlForecast.title": "7-day ML price forecast",
++  "dashboard.mlForecast.predicted": "Predicted modal price for {{date}}",
++  "dashboard.mlForecast.range": "Likely range",
++  "dashboard.mlForecast.error": "Model error on held-out test data: ₹{{mae}} per quintal (all markets, not this market alone)",
++  "dashboard.mlForecast.live": "Based on live market data",
++  "dashboard.mlForecast.replay": "Historical replay, not live data",
++  "dashboard.mlForecast.unavailable": "Forecast unavailable",
++  "dashboard.mlForecast.unavailableNote": "There is not enough recent live price history for this crop and market, so no forecast is shown rather than a guess.",
++  "dashboard.mlForecast.fullForecast": "Full forecast",
++  "dashboard.mlForecast.caution": "A statistical estimate, not a guarantee. Actual prices can differ.",
++  "dashboard.mlCompare.forecastNet": "7-day forecast net",
++  "dashboard.mlCompare.coverage": "Forecast covers {{coverage}} markets",
++  "dashboard.mlForecast.reason.unsupported_crop": "The trained model does not cover {{crop}} yet.",
++  "dashboard.mlForecast.reason.ml_dependencies_missing": "The ML libraries are not installed on this server.",
++  "dashboard.mlForecast.reason.artifacts_missing": "The trained model files are missing on this server.",
++  "dashboard.mlForecast.reason.insufficient_history": "There is no recent live price history for this crop and market.",
++  "dashboard.mlForecast.reason.stale_history": "The latest live price is too old to forecast from safely.",
++  "dashboard.mlForecast.reason.unknown_market": "This market is not in the model's training data.",
++  "dashboard.mlForecast.reason.request_failed": "The forecast service could not be reached.",
++  "dashboard.mlForecast.covers": "Model covers: {{crops}}",
++  "dashboard.mlForecast.replayBanner": "Replay of older data (as of {{asOf}}), not a prediction for next week.",
++  "dashboard.mlForecast.warn.baseline": "On test data this model did not beat the “price stays the same” baseline.",
++  "dashboard.mlForecast.warn.replayAge": "The latest price in this replay is {{days}} days old.",
++  "dashboard.mlForecast.modelLine": "Model: {{label}} · {{days}}-day horizon · trained on data up to {{until}}",
++  "dashboard.mlForecast.statusDown": "ML status: {{reason}}"
+ }
+diff --git a/frontend/src/i18n/translations/hi.json b/frontend/src/i18n/translations/hi.json
+index 2ae2b56..528b115 100644
+--- a/frontend/src/i18n/translations/hi.json
++++ b/frontend/src/i18n/translations/hi.json
+@@ -1574,5 +1574,30 @@
+   "dashboard.soilCard.sensors": "खेत के सेंसर",
+   "dashboard.soilCard.noSensors": "कोई जुड़ा नहीं (वैकल्पिक)",
+   "dashboard.soilCard.emptyBody": "अपनी मिट्टी का pH, बनावट और मौसम दर्ज करें और देखें कि कौन-सी फसलें स्रोत-सहित मार्गदर्शन से मेल खाती हैं और पास के बाज़ारों में उनसे कितनी कमाई हो सकती है। मिट्टी-जाँच का इतिहास सहेजने की सुविधा जल्द आ रही है।",
+-  "dashboard.soilCard.cta": "मिट्टी इंटेलिजेंस खोलें"
++  "dashboard.soilCard.cta": "मिट्टी इंटेलिजेंस खोलें",
++  "dashboard.mlForecast.title": "7-दिन का एमएल मूल्य पूर्वानुमान",
++  "dashboard.mlForecast.predicted": "{{date}} के लिए अनुमानित मोडल भाव",
++  "dashboard.mlForecast.range": "संभावित दायरा",
++  "dashboard.mlForecast.error": "होल्ड-आउट परीक्षण डेटा पर मॉडल की त्रुटि: ₹{{mae}} प्रति क्विंटल (सभी मंडियाँ, केवल यह मंडी नहीं)",
++  "dashboard.mlForecast.live": "लाइव बाज़ार डेटा पर आधारित",
++  "dashboard.mlForecast.replay": "ऐतिहासिक रीप्ले, लाइव डेटा नहीं",
++  "dashboard.mlForecast.unavailable": "पूर्वानुमान उपलब्ध नहीं",
++  "dashboard.mlForecast.unavailableNote": "इस फसल और मंडी के लिए हाल का पर्याप्त लाइव भाव इतिहास नहीं है, इसलिए अनुमान लगाने के बजाय कोई पूर्वानुमान नहीं दिखाया गया है।",
++  "dashboard.mlForecast.fullForecast": "पूरा पूर्वानुमान",
++  "dashboard.mlForecast.caution": "यह एक सांख्यिकीय अनुमान है, गारंटी नहीं। वास्तविक भाव अलग हो सकते हैं।",
++  "dashboard.mlCompare.forecastNet": "7-दिन का पूर्वानुमानित शुद्ध लाभ",
++  "dashboard.mlCompare.coverage": "पूर्वानुमान {{coverage}} मंडियों को कवर करता है",
++  "dashboard.mlForecast.reason.unsupported_crop": "प्रशिक्षित मॉडल अभी {{crop}} को कवर नहीं करता।",
++  "dashboard.mlForecast.reason.ml_dependencies_missing": "इस सर्वर पर एमएल लाइब्रेरी इंस्टॉल नहीं हैं।",
++  "dashboard.mlForecast.reason.artifacts_missing": "इस सर्वर पर प्रशिक्षित मॉडल की फ़ाइलें नहीं मिलीं।",
++  "dashboard.mlForecast.reason.insufficient_history": "इस फसल और मंडी के लिए हाल का लाइव भाव इतिहास उपलब्ध नहीं है।",
++  "dashboard.mlForecast.reason.stale_history": "सबसे ताज़ा लाइव भाव सुरक्षित पूर्वानुमान के लिए बहुत पुराना है।",
++  "dashboard.mlForecast.reason.unknown_market": "यह मंडी मॉडल के प्रशिक्षण डेटा में नहीं है।",
++  "dashboard.mlForecast.reason.request_failed": "पूर्वानुमान सेवा से संपर्क नहीं हो सका।",
++  "dashboard.mlForecast.covers": "मॉडल इन्हें कवर करता है: {{crops}}",
++  "dashboard.mlForecast.replayBanner": "पुराने डेटा का रीप्ले ({{asOf}} तक), अगले सप्ताह का अनुमान नहीं।",
++  "dashboard.mlForecast.warn.baseline": "परीक्षण डेटा पर यह मॉडल “भाव वही रहेगा” आधार-रेखा से बेहतर नहीं रहा।",
++  "dashboard.mlForecast.warn.replayAge": "इस रीप्ले में सबसे ताज़ा भाव {{days}} दिन पुराना है।",
++  "dashboard.mlForecast.modelLine": "मॉडल: {{label}} · {{days}}-दिन का अनुमान · {{until}} तक के डेटा पर प्रशिक्षित",
++  "dashboard.mlForecast.statusDown": "एमएल स्थिति: {{reason}}"
+ }
+diff --git a/frontend/src/i18n/translations/kn.json b/frontend/src/i18n/translations/kn.json
+index 1aab3a4..43b5f85 100644
+--- a/frontend/src/i18n/translations/kn.json
++++ b/frontend/src/i18n/translations/kn.json
+@@ -1574,5 +1574,30 @@
+   "dashboard.soilCard.sensors": "ಹೊಲದ ಸೆನ್ಸರ್‌ಗಳು",
+   "dashboard.soilCard.noSensors": "ಯಾವುದೂ ಸಂಪರ್ಕಗೊಂಡಿಲ್ಲ (ಐಚ್ಛಿಕ)",
+   "dashboard.soilCard.emptyBody": "ನಿಮ್ಮ ಮಣ್ಣಿನ pH, ರಚನೆ ಮತ್ತು ಋತುವನ್ನು ನಮೂದಿಸಿ, ಉಲ್ಲೇಖಿತ ಮಾರ್ಗದರ್ಶನಕ್ಕೆ ಯಾವ ಬೆಳೆಗಳು ಹೊಂದಿಕೆಯಾಗುತ್ತವೆ ಮತ್ತು ಹತ್ತಿರದ ಮಾರುಕಟ್ಟೆಗಳಲ್ಲಿ ಅವುಗಳಿಂದ ಎಷ್ಟು ಆದಾಯ ಬರಬಹುದು ಎಂದು ನೋಡಿ. ಮಣ್ಣು ಪರೀಕ್ಷೆಯ ಇತಿಹಾಸವನ್ನು ಉಳಿಸುವ ಸೌಲಭ್ಯ ಶೀಘ್ರದಲ್ಲೇ ಬರಲಿದೆ.",
+-  "dashboard.soilCard.cta": "ಮಣ್ಣು ಇಂಟೆಲಿಜೆನ್ಸ್ ತೆರೆಯಿರಿ"
++  "dashboard.soilCard.cta": "ಮಣ್ಣು ಇಂಟೆಲಿಜೆನ್ಸ್ ತೆರೆಯಿರಿ",
++  "dashboard.mlForecast.title": "7-day ML price forecast",
++  "dashboard.mlForecast.predicted": "Predicted modal price for {{date}}",
++  "dashboard.mlForecast.range": "Likely range",
++  "dashboard.mlForecast.error": "Model error on held-out test data: ₹{{mae}} per quintal (all markets, not this market alone)",
++  "dashboard.mlForecast.live": "Based on live market data",
++  "dashboard.mlForecast.replay": "Historical replay, not live data",
++  "dashboard.mlForecast.unavailable": "Forecast unavailable",
++  "dashboard.mlForecast.unavailableNote": "There is not enough recent live price history for this crop and market, so no forecast is shown rather than a guess.",
++  "dashboard.mlForecast.fullForecast": "Full forecast",
++  "dashboard.mlForecast.caution": "A statistical estimate, not a guarantee. Actual prices can differ.",
++  "dashboard.mlCompare.forecastNet": "7-day forecast net",
++  "dashboard.mlCompare.coverage": "Forecast covers {{coverage}} markets",
++  "dashboard.mlForecast.reason.unsupported_crop": "The trained model does not cover {{crop}} yet.",
++  "dashboard.mlForecast.reason.ml_dependencies_missing": "The ML libraries are not installed on this server.",
++  "dashboard.mlForecast.reason.artifacts_missing": "The trained model files are missing on this server.",
++  "dashboard.mlForecast.reason.insufficient_history": "There is no recent live price history for this crop and market.",
++  "dashboard.mlForecast.reason.stale_history": "The latest live price is too old to forecast from safely.",
++  "dashboard.mlForecast.reason.unknown_market": "This market is not in the model's training data.",
++  "dashboard.mlForecast.reason.request_failed": "The forecast service could not be reached.",
++  "dashboard.mlForecast.covers": "Model covers: {{crops}}",
++  "dashboard.mlForecast.replayBanner": "Replay of older data (as of {{asOf}}), not a prediction for next week.",
++  "dashboard.mlForecast.warn.baseline": "On test data this model did not beat the “price stays the same” baseline.",
++  "dashboard.mlForecast.warn.replayAge": "The latest price in this replay is {{days}} days old.",
++  "dashboard.mlForecast.modelLine": "Model: {{label}} · {{days}}-day horizon · trained on data up to {{until}}",
++  "dashboard.mlForecast.statusDown": "ML status: {{reason}}"
+ }
+\ No newline at end of file
+diff --git a/frontend/src/i18n/translations/mai.json b/frontend/src/i18n/translations/mai.json
+index 0a26ab0..191565b 100644
+--- a/frontend/src/i18n/translations/mai.json
++++ b/frontend/src/i18n/translations/mai.json
+@@ -1574,5 +1574,30 @@
+   "dashboard.soilCard.sensors": "खेतक सेंसर",
+   "dashboard.soilCard.noSensors": "कोनो जुड़ल नहि अछि (वैकल्पिक)",
+   "dashboard.soilCard.emptyBody": "अपन माटिक pH, बनावट आ मौसम भरू आ देखू जे कोन फसल स्रोत-सहित मार्गदर्शन सँ मेल खाइत अछि आ लग-पासक बजार मे कतेक कमाई भऽ सकैत अछि। माटि-जाँचक इतिहास सहेजबाक सुविधा जल्दिए आबि रहल अछि।",
+-  "dashboard.soilCard.cta": "माटि इंटेलिजेंस खोलू"
++  "dashboard.soilCard.cta": "माटि इंटेलिजेंस खोलू",
++  "dashboard.mlForecast.title": "7-day ML price forecast",
++  "dashboard.mlForecast.predicted": "Predicted modal price for {{date}}",
++  "dashboard.mlForecast.range": "Likely range",
++  "dashboard.mlForecast.error": "Model error on held-out test data: ₹{{mae}} per quintal (all markets, not this market alone)",
++  "dashboard.mlForecast.live": "Based on live market data",
++  "dashboard.mlForecast.replay": "Historical replay, not live data",
++  "dashboard.mlForecast.unavailable": "Forecast unavailable",
++  "dashboard.mlForecast.unavailableNote": "There is not enough recent live price history for this crop and market, so no forecast is shown rather than a guess.",
++  "dashboard.mlForecast.fullForecast": "Full forecast",
++  "dashboard.mlForecast.caution": "A statistical estimate, not a guarantee. Actual prices can differ.",
++  "dashboard.mlCompare.forecastNet": "7-day forecast net",
++  "dashboard.mlCompare.coverage": "Forecast covers {{coverage}} markets",
++  "dashboard.mlForecast.reason.unsupported_crop": "The trained model does not cover {{crop}} yet.",
++  "dashboard.mlForecast.reason.ml_dependencies_missing": "The ML libraries are not installed on this server.",
++  "dashboard.mlForecast.reason.artifacts_missing": "The trained model files are missing on this server.",
++  "dashboard.mlForecast.reason.insufficient_history": "There is no recent live price history for this crop and market.",
++  "dashboard.mlForecast.reason.stale_history": "The latest live price is too old to forecast from safely.",
++  "dashboard.mlForecast.reason.unknown_market": "This market is not in the model's training data.",
++  "dashboard.mlForecast.reason.request_failed": "The forecast service could not be reached.",
++  "dashboard.mlForecast.covers": "Model covers: {{crops}}",
++  "dashboard.mlForecast.replayBanner": "Replay of older data (as of {{asOf}}), not a prediction for next week.",
++  "dashboard.mlForecast.warn.baseline": "On test data this model did not beat the “price stays the same” baseline.",
++  "dashboard.mlForecast.warn.replayAge": "The latest price in this replay is {{days}} days old.",
++  "dashboard.mlForecast.modelLine": "Model: {{label}} · {{days}}-day horizon · trained on data up to {{until}}",
++  "dashboard.mlForecast.statusDown": "ML status: {{reason}}"
+ }
+diff --git a/frontend/src/i18n/translations/ml.json b/frontend/src/i18n/translations/ml.json
+index 6462b25..0815130 100644
+--- a/frontend/src/i18n/translations/ml.json
++++ b/frontend/src/i18n/translations/ml.json
+@@ -1574,5 +1574,30 @@
+   "dashboard.soilCard.sensors": "വയൽ സെൻസറുകൾ",
+   "dashboard.soilCard.noSensors": "ഒന്നും ബന്ധിപ്പിച്ചിട്ടില്ല (ഓപ്ഷണൽ)",
+   "dashboard.soilCard.emptyBody": "നിങ്ങളുടെ മണ്ണിന്റെ pH, ഘടന, സീസൺ എന്നിവ നൽകി, ഉദ്ധരിച്ച മാർഗനിർദേശവുമായി ഏതൊക്കെ വിളകൾ യോജിക്കുന്നു എന്നും സമീപത്തെ വിപണികളിൽ അവയിൽ നിന്ന് എത്ര വരുമാനം ലഭിക്കാമെന്നും കാണുക. മണ്ണ് പരിശോധനാ ചരിത്രം സേവ് ചെയ്യാനുള്ള സൗകര്യം ഉടൻ വരുന്നു.",
+-  "dashboard.soilCard.cta": "മണ്ണ് ഇന്റലിജൻസ് തുറക്കുക"
++  "dashboard.soilCard.cta": "മണ്ണ് ഇന്റലിജൻസ് തുറക്കുക",
++  "dashboard.mlForecast.title": "7-day ML price forecast",
++  "dashboard.mlForecast.predicted": "Predicted modal price for {{date}}",
++  "dashboard.mlForecast.range": "Likely range",
++  "dashboard.mlForecast.error": "Model error on held-out test data: ₹{{mae}} per quintal (all markets, not this market alone)",
++  "dashboard.mlForecast.live": "Based on live market data",
++  "dashboard.mlForecast.replay": "Historical replay, not live data",
++  "dashboard.mlForecast.unavailable": "Forecast unavailable",
++  "dashboard.mlForecast.unavailableNote": "There is not enough recent live price history for this crop and market, so no forecast is shown rather than a guess.",
++  "dashboard.mlForecast.fullForecast": "Full forecast",
++  "dashboard.mlForecast.caution": "A statistical estimate, not a guarantee. Actual prices can differ.",
++  "dashboard.mlCompare.forecastNet": "7-day forecast net",
++  "dashboard.mlCompare.coverage": "Forecast covers {{coverage}} markets",
++  "dashboard.mlForecast.reason.unsupported_crop": "The trained model does not cover {{crop}} yet.",
++  "dashboard.mlForecast.reason.ml_dependencies_missing": "The ML libraries are not installed on this server.",
++  "dashboard.mlForecast.reason.artifacts_missing": "The trained model files are missing on this server.",
++  "dashboard.mlForecast.reason.insufficient_history": "There is no recent live price history for this crop and market.",
++  "dashboard.mlForecast.reason.stale_history": "The latest live price is too old to forecast from safely.",
++  "dashboard.mlForecast.reason.unknown_market": "This market is not in the model's training data.",
++  "dashboard.mlForecast.reason.request_failed": "The forecast service could not be reached.",
++  "dashboard.mlForecast.covers": "Model covers: {{crops}}",
++  "dashboard.mlForecast.replayBanner": "Replay of older data (as of {{asOf}}), not a prediction for next week.",
++  "dashboard.mlForecast.warn.baseline": "On test data this model did not beat the “price stays the same” baseline.",
++  "dashboard.mlForecast.warn.replayAge": "The latest price in this replay is {{days}} days old.",
++  "dashboard.mlForecast.modelLine": "Model: {{label}} · {{days}}-day horizon · trained on data up to {{until}}",
++  "dashboard.mlForecast.statusDown": "ML status: {{reason}}"
+ }
+\ No newline at end of file
+diff --git a/frontend/src/i18n/translations/mr.json b/frontend/src/i18n/translations/mr.json
+index 12c56c0..57c97a3 100644
+--- a/frontend/src/i18n/translations/mr.json
++++ b/frontend/src/i18n/translations/mr.json
+@@ -1574,5 +1574,30 @@
+   "dashboard.soilCard.sensors": "शेतातील सेन्सर",
+   "dashboard.soilCard.noSensors": "कोणतेही जोडलेले नाही (ऐच्छिक)",
+   "dashboard.soilCard.emptyBody": "तुमच्या मातीचा pH, पोत आणि हंगाम टाका आणि कोणती पिके संदर्भित मार्गदर्शनाशी जुळतात आणि जवळच्या बाजारांत त्यातून किती उत्पन्न मिळू शकते ते पहा. माती-चाचणीचा इतिहास जतन करण्याची सुविधा लवकरच येत आहे.",
+-  "dashboard.soilCard.cta": "माती इंटेलिजेंस उघडा"
++  "dashboard.soilCard.cta": "माती इंटेलिजेंस उघडा",
++  "dashboard.mlForecast.title": "7-day ML price forecast",
++  "dashboard.mlForecast.predicted": "Predicted modal price for {{date}}",
++  "dashboard.mlForecast.range": "Likely range",
++  "dashboard.mlForecast.error": "Model error on held-out test data: ₹{{mae}} per quintal (all markets, not this market alone)",
++  "dashboard.mlForecast.live": "Based on live market data",
++  "dashboard.mlForecast.replay": "Historical replay, not live data",
++  "dashboard.mlForecast.unavailable": "Forecast unavailable",
++  "dashboard.mlForecast.unavailableNote": "There is not enough recent live price history for this crop and market, so no forecast is shown rather than a guess.",
++  "dashboard.mlForecast.fullForecast": "Full forecast",
++  "dashboard.mlForecast.caution": "A statistical estimate, not a guarantee. Actual prices can differ.",
++  "dashboard.mlCompare.forecastNet": "7-day forecast net",
++  "dashboard.mlCompare.coverage": "Forecast covers {{coverage}} markets",
++  "dashboard.mlForecast.reason.unsupported_crop": "The trained model does not cover {{crop}} yet.",
++  "dashboard.mlForecast.reason.ml_dependencies_missing": "The ML libraries are not installed on this server.",
++  "dashboard.mlForecast.reason.artifacts_missing": "The trained model files are missing on this server.",
++  "dashboard.mlForecast.reason.insufficient_history": "There is no recent live price history for this crop and market.",
++  "dashboard.mlForecast.reason.stale_history": "The latest live price is too old to forecast from safely.",
++  "dashboard.mlForecast.reason.unknown_market": "This market is not in the model's training data.",
++  "dashboard.mlForecast.reason.request_failed": "The forecast service could not be reached.",
++  "dashboard.mlForecast.covers": "Model covers: {{crops}}",
++  "dashboard.mlForecast.replayBanner": "Replay of older data (as of {{asOf}}), not a prediction for next week.",
++  "dashboard.mlForecast.warn.baseline": "On test data this model did not beat the “price stays the same” baseline.",
++  "dashboard.mlForecast.warn.replayAge": "The latest price in this replay is {{days}} days old.",
++  "dashboard.mlForecast.modelLine": "Model: {{label}} · {{days}}-day horizon · trained on data up to {{until}}",
++  "dashboard.mlForecast.statusDown": "ML status: {{reason}}"
+ }
+diff --git a/frontend/src/i18n/translations/or.json b/frontend/src/i18n/translations/or.json
+index cb1eb66..56fed38 100644
+--- a/frontend/src/i18n/translations/or.json
++++ b/frontend/src/i18n/translations/or.json
+@@ -1574,5 +1574,30 @@
+   "dashboard.soilCard.sensors": "କ୍ଷେତ ସେନ୍ସର",
+   "dashboard.soilCard.noSensors": "କିଛି ଯୋଡ଼ା ହୋଇନାହିଁ (ଇଚ୍ଛାଧୀନ)",
+   "dashboard.soilCard.emptyBody": "ଆପଣଙ୍କ ମାଟିର pH, ଗଠନ ଏବଂ ଋତୁ ଦିଅନ୍ତୁ ଏବଂ ଦେଖନ୍ତୁ କେଉଁ ଫସଲ ଉଲ୍ଲିଖିତ ମାର୍ଗଦର୍ଶନ ସହ ମେଳ ଖାଏ ଏବଂ ପାଖ ବଜାରରେ ସେଥିରୁ କେତେ ଆୟ ହୋଇପାରେ। ମାଟି ପରୀକ୍ଷାର ଇତିହାସ ସେଭ୍ କରିବା ସୁବିଧା ଶୀଘ୍ର ଆସୁଛି।",
+-  "dashboard.soilCard.cta": "ମାଟି ଇଣ୍ଟେଲିଜେନ୍ସ ଖୋଲନ୍ତୁ"
++  "dashboard.soilCard.cta": "ମାଟି ଇଣ୍ଟେଲିଜେନ୍ସ ଖୋଲନ୍ତୁ",
++  "dashboard.mlForecast.title": "7-day ML price forecast",
++  "dashboard.mlForecast.predicted": "Predicted modal price for {{date}}",
++  "dashboard.mlForecast.range": "Likely range",
++  "dashboard.mlForecast.error": "Model error on held-out test data: ₹{{mae}} per quintal (all markets, not this market alone)",
++  "dashboard.mlForecast.live": "Based on live market data",
++  "dashboard.mlForecast.replay": "Historical replay, not live data",
++  "dashboard.mlForecast.unavailable": "Forecast unavailable",
++  "dashboard.mlForecast.unavailableNote": "There is not enough recent live price history for this crop and market, so no forecast is shown rather than a guess.",
++  "dashboard.mlForecast.fullForecast": "Full forecast",
++  "dashboard.mlForecast.caution": "A statistical estimate, not a guarantee. Actual prices can differ.",
++  "dashboard.mlCompare.forecastNet": "7-day forecast net",
++  "dashboard.mlCompare.coverage": "Forecast covers {{coverage}} markets",
++  "dashboard.mlForecast.reason.unsupported_crop": "The trained model does not cover {{crop}} yet.",
++  "dashboard.mlForecast.reason.ml_dependencies_missing": "The ML libraries are not installed on this server.",
++  "dashboard.mlForecast.reason.artifacts_missing": "The trained model files are missing on this server.",
++  "dashboard.mlForecast.reason.insufficient_history": "There is no recent live price history for this crop and market.",
++  "dashboard.mlForecast.reason.stale_history": "The latest live price is too old to forecast from safely.",
++  "dashboard.mlForecast.reason.unknown_market": "This market is not in the model's training data.",
++  "dashboard.mlForecast.reason.request_failed": "The forecast service could not be reached.",
++  "dashboard.mlForecast.covers": "Model covers: {{crops}}",
++  "dashboard.mlForecast.replayBanner": "Replay of older data (as of {{asOf}}), not a prediction for next week.",
++  "dashboard.mlForecast.warn.baseline": "On test data this model did not beat the “price stays the same” baseline.",
++  "dashboard.mlForecast.warn.replayAge": "The latest price in this replay is {{days}} days old.",
++  "dashboard.mlForecast.modelLine": "Model: {{label}} · {{days}}-day horizon · trained on data up to {{until}}",
++  "dashboard.mlForecast.statusDown": "ML status: {{reason}}"
+ }
+diff --git a/frontend/src/i18n/translations/pa.json b/frontend/src/i18n/translations/pa.json
+index 43019ff..6200927 100644
+--- a/frontend/src/i18n/translations/pa.json
++++ b/frontend/src/i18n/translations/pa.json
+@@ -1574,5 +1574,30 @@
+   "dashboard.soilCard.sensors": "ਖੇਤ ਦੇ ਸੈਂਸਰ",
+   "dashboard.soilCard.noSensors": "ਕੋਈ ਜੁੜਿਆ ਨਹੀਂ (ਵਿਕਲਪਿਕ)",
+   "dashboard.soilCard.emptyBody": "ਆਪਣੀ ਮਿੱਟੀ ਦਾ pH, ਬਣਤਰ ਅਤੇ ਮੌਸਮ ਦਰਜ ਕਰੋ ਅਤੇ ਵੇਖੋ ਕਿ ਕਿਹੜੀਆਂ ਫ਼ਸਲਾਂ ਹਵਾਲੇ ਵਾਲੇ ਮਾਰਗਦਰਸ਼ਨ ਨਾਲ ਮੇਲ ਖਾਂਦੀਆਂ ਹਨ ਅਤੇ ਨੇੜਲੀਆਂ ਮੰਡੀਆਂ ਵਿੱਚ ਉਨ੍ਹਾਂ ਤੋਂ ਕਿੰਨੀ ਕਮਾਈ ਹੋ ਸਕਦੀ ਹੈ। ਮਿੱਟੀ ਜਾਂਚ ਦਾ ਇਤਿਹਾਸ ਸੰਭਾਲਣ ਦੀ ਸਹੂਲਤ ਜਲਦੀ ਆ ਰਹੀ ਹੈ।",
+-  "dashboard.soilCard.cta": "ਮਿੱਟੀ ਇੰਟੈਲੀਜੈਂਸ ਖੋਲ੍ਹੋ"
++  "dashboard.soilCard.cta": "ਮਿੱਟੀ ਇੰਟੈਲੀਜੈਂਸ ਖੋਲ੍ਹੋ",
++  "dashboard.mlForecast.title": "7-day ML price forecast",
++  "dashboard.mlForecast.predicted": "Predicted modal price for {{date}}",
++  "dashboard.mlForecast.range": "Likely range",
++  "dashboard.mlForecast.error": "Model error on held-out test data: ₹{{mae}} per quintal (all markets, not this market alone)",
++  "dashboard.mlForecast.live": "Based on live market data",
++  "dashboard.mlForecast.replay": "Historical replay, not live data",
++  "dashboard.mlForecast.unavailable": "Forecast unavailable",
++  "dashboard.mlForecast.unavailableNote": "There is not enough recent live price history for this crop and market, so no forecast is shown rather than a guess.",
++  "dashboard.mlForecast.fullForecast": "Full forecast",
++  "dashboard.mlForecast.caution": "A statistical estimate, not a guarantee. Actual prices can differ.",
++  "dashboard.mlCompare.forecastNet": "7-day forecast net",
++  "dashboard.mlCompare.coverage": "Forecast covers {{coverage}} markets",
++  "dashboard.mlForecast.reason.unsupported_crop": "The trained model does not cover {{crop}} yet.",
++  "dashboard.mlForecast.reason.ml_dependencies_missing": "The ML libraries are not installed on this server.",
++  "dashboard.mlForecast.reason.artifacts_missing": "The trained model files are missing on this server.",
++  "dashboard.mlForecast.reason.insufficient_history": "There is no recent live price history for this crop and market.",
++  "dashboard.mlForecast.reason.stale_history": "The latest live price is too old to forecast from safely.",
++  "dashboard.mlForecast.reason.unknown_market": "This market is not in the model's training data.",
++  "dashboard.mlForecast.reason.request_failed": "The forecast service could not be reached.",
++  "dashboard.mlForecast.covers": "Model covers: {{crops}}",
++  "dashboard.mlForecast.replayBanner": "Replay of older data (as of {{asOf}}), not a prediction for next week.",
++  "dashboard.mlForecast.warn.baseline": "On test data this model did not beat the “price stays the same” baseline.",
++  "dashboard.mlForecast.warn.replayAge": "The latest price in this replay is {{days}} days old.",
++  "dashboard.mlForecast.modelLine": "Model: {{label}} · {{days}}-day horizon · trained on data up to {{until}}",
++  "dashboard.mlForecast.statusDown": "ML status: {{reason}}"
+ }
+diff --git a/frontend/src/i18n/translations/ta.json b/frontend/src/i18n/translations/ta.json
+index 870f0be..6d53d6f 100644
+--- a/frontend/src/i18n/translations/ta.json
++++ b/frontend/src/i18n/translations/ta.json
+@@ -1574,5 +1574,30 @@
+   "dashboard.soilCard.sensors": "வயல் உணரிகள்",
+   "dashboard.soilCard.noSensors": "எதுவும் இணைக்கப்படவில்லை (விருப்பத்திற்குரியது)",
+   "dashboard.soilCard.emptyBody": "உங்கள் மண்ணின் pH, அமைப்பு மற்றும் பருவத்தை உள்ளிட்டு, மேற்கோளுடன் கூடிய வழிகாட்டுதலுடன் எந்தப் பயிர்கள் பொருந்துகின்றன என்பதையும் அருகிலுள்ள சந்தைகளில் அவற்றால் எவ்வளவு வருமானம் கிடைக்கலாம் என்பதையும் பாருங்கள். மண் பரிசோதனை வரலாற்றைச் சேமிக்கும் வசதி விரைவில் வருகிறது.",
+-  "dashboard.soilCard.cta": "மண் நுண்ணறிவைத் திறக்கவும்"
++  "dashboard.soilCard.cta": "மண் நுண்ணறிவைத் திறக்கவும்",
++  "dashboard.mlForecast.title": "7-day ML price forecast",
++  "dashboard.mlForecast.predicted": "Predicted modal price for {{date}}",
++  "dashboard.mlForecast.range": "Likely range",
++  "dashboard.mlForecast.error": "Model error on held-out test data: ₹{{mae}} per quintal (all markets, not this market alone)",
++  "dashboard.mlForecast.live": "Based on live market data",
++  "dashboard.mlForecast.replay": "Historical replay, not live data",
++  "dashboard.mlForecast.unavailable": "Forecast unavailable",
++  "dashboard.mlForecast.unavailableNote": "There is not enough recent live price history for this crop and market, so no forecast is shown rather than a guess.",
++  "dashboard.mlForecast.fullForecast": "Full forecast",
++  "dashboard.mlForecast.caution": "A statistical estimate, not a guarantee. Actual prices can differ.",
++  "dashboard.mlCompare.forecastNet": "7-day forecast net",
++  "dashboard.mlCompare.coverage": "Forecast covers {{coverage}} markets",
++  "dashboard.mlForecast.reason.unsupported_crop": "The trained model does not cover {{crop}} yet.",
++  "dashboard.mlForecast.reason.ml_dependencies_missing": "The ML libraries are not installed on this server.",
++  "dashboard.mlForecast.reason.artifacts_missing": "The trained model files are missing on this server.",
++  "dashboard.mlForecast.reason.insufficient_history": "There is no recent live price history for this crop and market.",
++  "dashboard.mlForecast.reason.stale_history": "The latest live price is too old to forecast from safely.",
++  "dashboard.mlForecast.reason.unknown_market": "This market is not in the model's training data.",
++  "dashboard.mlForecast.reason.request_failed": "The forecast service could not be reached.",
++  "dashboard.mlForecast.covers": "Model covers: {{crops}}",
++  "dashboard.mlForecast.replayBanner": "Replay of older data (as of {{asOf}}), not a prediction for next week.",
++  "dashboard.mlForecast.warn.baseline": "On test data this model did not beat the “price stays the same” baseline.",
++  "dashboard.mlForecast.warn.replayAge": "The latest price in this replay is {{days}} days old.",
++  "dashboard.mlForecast.modelLine": "Model: {{label}} · {{days}}-day horizon · trained on data up to {{until}}",
++  "dashboard.mlForecast.statusDown": "ML status: {{reason}}"
+ }
+diff --git a/frontend/src/i18n/translations/te.json b/frontend/src/i18n/translations/te.json
+index 03e26b1..af613b6 100644
+--- a/frontend/src/i18n/translations/te.json
++++ b/frontend/src/i18n/translations/te.json
+@@ -1574,5 +1574,30 @@
+   "dashboard.soilCard.sensors": "పొలం సెన్సార్లు",
+   "dashboard.soilCard.noSensors": "ఏదీ అనుసంధానం కాలేదు (ఐచ్ఛికం)",
+   "dashboard.soilCard.emptyBody": "మీ నేల pH, నిర్మాణం మరియు సీజన్ నమోదు చేసి, ఆధారాలతో కూడిన మార్గదర్శకానికి ఏ పంటలు సరిపోతాయో, సమీప మార్కెట్లలో వాటి నుండి ఎంత ఆదాయం రావచ్చో చూడండి. నేల పరీక్ష చరిత్రను సేవ్ చేసే సదుపాయం త్వరలో వస్తోంది.",
+-  "dashboard.soilCard.cta": "నేల ఇంటెలిజెన్స్ తెరవండి"
++  "dashboard.soilCard.cta": "నేల ఇంటెలిజెన్స్ తెరవండి",
++  "dashboard.mlForecast.title": "7-day ML price forecast",
++  "dashboard.mlForecast.predicted": "Predicted modal price for {{date}}",
++  "dashboard.mlForecast.range": "Likely range",
++  "dashboard.mlForecast.error": "Model error on held-out test data: ₹{{mae}} per quintal (all markets, not this market alone)",
++  "dashboard.mlForecast.live": "Based on live market data",
++  "dashboard.mlForecast.replay": "Historical replay, not live data",
++  "dashboard.mlForecast.unavailable": "Forecast unavailable",
++  "dashboard.mlForecast.unavailableNote": "There is not enough recent live price history for this crop and market, so no forecast is shown rather than a guess.",
++  "dashboard.mlForecast.fullForecast": "Full forecast",
++  "dashboard.mlForecast.caution": "A statistical estimate, not a guarantee. Actual prices can differ.",
++  "dashboard.mlCompare.forecastNet": "7-day forecast net",
++  "dashboard.mlCompare.coverage": "Forecast covers {{coverage}} markets",
++  "dashboard.mlForecast.reason.unsupported_crop": "The trained model does not cover {{crop}} yet.",
++  "dashboard.mlForecast.reason.ml_dependencies_missing": "The ML libraries are not installed on this server.",
++  "dashboard.mlForecast.reason.artifacts_missing": "The trained model files are missing on this server.",
++  "dashboard.mlForecast.reason.insufficient_history": "There is no recent live price history for this crop and market.",
++  "dashboard.mlForecast.reason.stale_history": "The latest live price is too old to forecast from safely.",
++  "dashboard.mlForecast.reason.unknown_market": "This market is not in the model's training data.",
++  "dashboard.mlForecast.reason.request_failed": "The forecast service could not be reached.",
++  "dashboard.mlForecast.covers": "Model covers: {{crops}}",
++  "dashboard.mlForecast.replayBanner": "Replay of older data (as of {{asOf}}), not a prediction for next week.",
++  "dashboard.mlForecast.warn.baseline": "On test data this model did not beat the “price stays the same” baseline.",
++  "dashboard.mlForecast.warn.replayAge": "The latest price in this replay is {{days}} days old.",
++  "dashboard.mlForecast.modelLine": "Model: {{label}} · {{days}}-day horizon · trained on data up to {{until}}",
++  "dashboard.mlForecast.statusDown": "ML status: {{reason}}"
+ }
+\ No newline at end of file
+diff --git a/frontend/src/i18n/translations/ur.json b/frontend/src/i18n/translations/ur.json
+index 2883051..6036f5c 100644
+--- a/frontend/src/i18n/translations/ur.json
++++ b/frontend/src/i18n/translations/ur.json
+@@ -1693,5 +1693,30 @@
+   "dashboard.soilCard.sensors": "کھیت کے سینسر",
+   "dashboard.soilCard.noSensors": "کوئی منسلک نہیں (اختیاری)",
+   "dashboard.soilCard.emptyBody": "اپنی مٹی کا pH، ساخت اور موسم درج کریں اور دیکھیں کہ کون سی فصلیں حوالہ شدہ رہنمائی سے مطابقت رکھتی ہیں اور قریبی منڈیوں میں ان سے کتنی آمدنی ہو سکتی ہے۔ مٹی کی جانچ کی تاریخ محفوظ کرنے کی سہولت جلد آ رہی ہے۔",
+-  "dashboard.soilCard.cta": "مٹی انٹیلیجنس کھولیں"
++  "dashboard.soilCard.cta": "مٹی انٹیلیجنس کھولیں",
++  "dashboard.mlForecast.title": "7-day ML price forecast",
++  "dashboard.mlForecast.predicted": "Predicted modal price for {{date}}",
++  "dashboard.mlForecast.range": "Likely range",
++  "dashboard.mlForecast.error": "Model error on held-out test data: ₹{{mae}} per quintal (all markets, not this market alone)",
++  "dashboard.mlForecast.live": "Based on live market data",
++  "dashboard.mlForecast.replay": "Historical replay, not live data",
++  "dashboard.mlForecast.unavailable": "Forecast unavailable",
++  "dashboard.mlForecast.unavailableNote": "There is not enough recent live price history for this crop and market, so no forecast is shown rather than a guess.",
++  "dashboard.mlForecast.fullForecast": "Full forecast",
++  "dashboard.mlForecast.caution": "A statistical estimate, not a guarantee. Actual prices can differ.",
++  "dashboard.mlCompare.forecastNet": "7-day forecast net",
++  "dashboard.mlCompare.coverage": "Forecast covers {{coverage}} markets",
++  "dashboard.mlForecast.reason.unsupported_crop": "The trained model does not cover {{crop}} yet.",
++  "dashboard.mlForecast.reason.ml_dependencies_missing": "The ML libraries are not installed on this server.",
++  "dashboard.mlForecast.reason.artifacts_missing": "The trained model files are missing on this server.",
++  "dashboard.mlForecast.reason.insufficient_history": "There is no recent live price history for this crop and market.",
++  "dashboard.mlForecast.reason.stale_history": "The latest live price is too old to forecast from safely.",
++  "dashboard.mlForecast.reason.unknown_market": "This market is not in the model's training data.",
++  "dashboard.mlForecast.reason.request_failed": "The forecast service could not be reached.",
++  "dashboard.mlForecast.covers": "Model covers: {{crops}}",
++  "dashboard.mlForecast.replayBanner": "Replay of older data (as of {{asOf}}), not a prediction for next week.",
++  "dashboard.mlForecast.warn.baseline": "On test data this model did not beat the “price stays the same” baseline.",
++  "dashboard.mlForecast.warn.replayAge": "The latest price in this replay is {{days}} days old.",
++  "dashboard.mlForecast.modelLine": "Model: {{label}} · {{days}}-day horizon · trained on data up to {{until}}",
++  "dashboard.mlForecast.statusDown": "ML status: {{reason}}"
+ }
+diff --git a/frontend/src/pages/FarmerDashboard.jsx b/frontend/src/pages/FarmerDashboard.jsx
+index e8bf229..88f6cb5 100644
+--- a/frontend/src/pages/FarmerDashboard.jsx
++++ b/frontend/src/pages/FarmerDashboard.jsx
+@@ -15,6 +15,7 @@ import SellingJourney from '../components/SellingJourney'
+ import WeatherCard from '../components/WeatherCard'
+ import BestSellingOpportunity from '../components/BestSellingOpportunity'
+ import FarmHealthCard from '../components/FarmHealthCard'
++import MlForecastCard from '../components/MlForecastCard'
+ import { selectFocusJourney } from '../utils/sellingJourney'
+ 
+ const TXN_STATUS_TONE = {
+@@ -83,6 +84,7 @@ export default function FarmerDashboard() {
+   const [error, setError] = useState('')
+ 
+   const [comparison, setComparison] = useState(null)
++  const [mlStatus, setMlStatus] = useState(null)   // GET /forecast/ml/status (what is really running)
+   const [comparisonLoading, setComparisonLoading] = useState(false)
+   const [comparisonError, setComparisonError] = useState('')
+ 
+@@ -104,15 +106,27 @@ export default function FarmerDashboard() {
+ 
+   const journey = (lots && transactions) ? selectFocusJourney(lots, transactions) : null
+   const focusLot = journey?.lot || null
++  // ML fields exist only when /forecast/ml/compare answered (not the fallback).
++  const hasMlCompare = !!comparison && Array.isArray(comparison.options) && comparison.options.some(o => 'ml_forecast' in o)
++  const mlForecast = hasMlCompare
++    ? (comparison.options.find(o => o.market === comparison.recommended_market)?.ml_forecast || null)
++    // A comparison arrived but without ML fields = the ML call failed and we fell back.
++    : (comparison ? { available: false, reason: 'request_failed' } : null)
+ 
+   // Best Selling Opportunity + Market Comparison: ONE call, shared by both
+   // sections below -- no duplicated business logic, real /market/compare
+   // data throughout (see BestSellingOpportunity.jsx).
++  useEffect(() => { api.getMlStatus().then(setMlStatus).catch(() => setMlStatus(null)) }, [])
++
+   useEffect(() => {
+     if (!focusLot) return
+     setComparisonLoading(true)
+     setComparisonError('')
+-    api.compareMarkets(focusLot.crop, focusLot.quantity_kg, focusLot.location)
++    // /forecast/ml/compare = the SAME market comparison plus a forecast per market.
++    // If it fails for any reason, fall back to the plain comparison so the
++    // dashboard never loses the existing, working section.
++    api.getMlCompare(focusLot.crop, focusLot.quantity_kg, focusLot.location)
++      .catch(() => api.compareMarkets(focusLot.crop, focusLot.quantity_kg, focusLot.location))
+       .then(setComparison)
+       .catch(e => setComparisonError(e.message))
+       .finally(() => setComparisonLoading(false))
+@@ -196,7 +210,7 @@ export default function FarmerDashboard() {
+       {/* Market Comparison + Price Trend + Weather -- the intelligence row */}
+       <div>
+         <SectionLabel icon={ScrollText}>{t('dashboard.marketIntelligence')}</SectionLabel>
+-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
++        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+           <div className="lg:col-span-2 space-y-6">
+             {comparison && comparison.options?.length > 1 && (
+               <div className="bg-white dark:bg-white/5 rounded-2xl shadow-card border border-black/5 dark:border-white/10 p-5 md:p-6 overflow-x-auto">
+@@ -210,6 +224,7 @@ export default function FarmerDashboard() {
+                       <th className="pb-2 font-medium">{t('dashboard.distance')}</th>
+                       <th className="pb-2 font-medium">{t('dashboard.transport')}</th>
+                       <th className="pb-2 font-medium">{t('dashboard.netRealization')}</th>
++                      {hasMlCompare && <th className="pb-2 font-medium">{t('dashboard.mlCompare.forecastNet')}</th>}
+                     </tr>
+                   </thead>
+                   <tbody>
+@@ -223,10 +238,20 @@ export default function FarmerDashboard() {
+                         <td className="py-2.5">{o.distance_km} km</td>
+                         <td className="py-2.5 font-mono-data">₹{o.transport_cost.toLocaleString('en-IN')}</td>
+                         <td className="py-2.5 font-mono-data font-semibold">₹{o.net_profit.toLocaleString('en-IN')}</td>
++                        {hasMlCompare && (
++                          <td className="py-2.5 font-mono-data">
++                            {o.forecast_net_profit != null ? `₹${o.forecast_net_profit.toLocaleString('en-IN')}` : '—'}
++                          </td>
++                        )}
+                       </tr>
+                     ))}
+                   </tbody>
+                 </table>
++                {hasMlCompare && comparison.forecast_coverage && (
++                  <p className="text-[11px] text-ink/40 dark:text-paper/40 mt-2">
++                    {t('dashboard.mlCompare.coverage', { coverage: comparison.forecast_coverage })}
++                  </p>
++                )}
+               </div>
+             )}
+ 
+@@ -267,6 +292,34 @@ export default function FarmerDashboard() {
+                 </p>
+               )}
+             </div>
++
++            {/* ML forecast: shown only from real /forecast/ml data, honest empty state otherwise */}
++            <MlForecastCard forecast={mlForecast} status={mlStatus} crop={focusLot?.crop} market={comparison?.recommended_market} loading={comparisonLoading} />
++
++            {/* Buyer demand relevant to this crop */}
++            <div className="bg-white dark:bg-white/5 rounded-2xl shadow-card border border-black/5 dark:border-white/10 p-5">
++              <div className="flex items-center justify-between mb-3">
++                <h2 className="font-display font-semibold">{t('dashboard.buyerDemand')}</h2>
++                <Link to="/buyer-demands" className="text-sm text-forest dark:text-forest-light font-semibold hover:underline">{t('dashboard.all')} →</Link>
++              </div>
++              {!demands || demands.length === 0 ? (
++                <p className="text-sm text-ink/50 dark:text-paper/50">
++                  {focusLot ? t('dashboard.noBuyerDemand') : t('dashboard.addProduceForDemand')}
++                </p>
++              ) : (
++                <div className="space-y-2">
++                  {demands.slice(0, 3).map(d => (
++                    <div key={d.id} className="text-xs border border-black/5 dark:border-white/10 rounded-lg px-3 py-2">
++                      <div className="font-semibold">{d.required_quantity_kg.toLocaleString('en-IN')} kg {d.crop}</div>
++                      <div className="text-ink/50 dark:text-paper/50 mt-0.5">
++                        {d.target_price_per_kg ? `${t('dashboard.target')} ₹${d.target_price_per_kg}/kg` : t('dashboard.priceNegotiable')}
++                        {d.delivery_location ? ` · ${d.delivery_location}` : ''}
++                      </div>
++                    </div>
++                  ))}
++                </div>
++              )}
++            </div>
+           </div>
+ 
+           <div className="space-y-6">
+@@ -301,31 +354,6 @@ export default function FarmerDashboard() {
+               )
+             })()}
+ 
+-            {/* Buyer demand relevant to this crop */}
+-            <div className="bg-white dark:bg-white/5 rounded-2xl shadow-card border border-black/5 dark:border-white/10 p-5">
+-              <div className="flex items-center justify-between mb-3">
+-                <h2 className="font-display font-semibold">{t('dashboard.buyerDemand')}</h2>
+-                <Link to="/buyer-demands" className="text-sm text-forest dark:text-forest-light font-semibold hover:underline">{t('dashboard.all')} →</Link>
+-              </div>
+-              {!demands || demands.length === 0 ? (
+-                <p className="text-sm text-ink/50 dark:text-paper/50">
+-                  {focusLot ? t('dashboard.noBuyerDemand') : t('dashboard.addProduceForDemand')}
+-                </p>
+-              ) : (
+-                <div className="space-y-2">
+-                  {demands.slice(0, 3).map(d => (
+-                    <div key={d.id} className="text-xs border border-black/5 dark:border-white/10 rounded-lg px-3 py-2">
+-                      <div className="font-semibold">{d.required_quantity_kg.toLocaleString('en-IN')} kg {d.crop}</div>
+-                      <div className="text-ink/50 dark:text-paper/50 mt-0.5">
+-                        {d.target_price_per_kg ? `${t('dashboard.target')} ₹${d.target_price_per_kg}/kg` : t('dashboard.priceNegotiable')}
+-                        {d.delivery_location ? ` · ${d.delivery_location}` : ''}
+-                      </div>
+-                    </div>
+-                  ))}
+-                </div>
+-              )}
+-            </div>
+-
+             {/* AI Advisor entry */}
+             <Link to="/advisor" className="block bg-forest-dark text-paper rounded-2xl p-5 hover:opacity-90 transition-opacity">
+               <div className="flex items-center gap-2 mb-1">
+@@ -344,8 +372,9 @@ export default function FarmerDashboard() {
+       {/* Transactions + Alerts + Lots */}
+       <div>
+         <SectionLabel icon={Briefcase}>{t('dashboard.sellShip')}</SectionLabel>
+-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+-          <div className="lg:col-span-2 bg-white dark:bg-white/5 rounded-2xl shadow-card border border-black/5 dark:border-white/10 p-6">
++        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
++          <div className="lg:col-span-2 space-y-6">
++          <div className="bg-white dark:bg-white/5 rounded-2xl shadow-card border border-black/5 dark:border-white/10 p-6">
+             <div className="flex items-center justify-between mb-4">
+               <h2 className="font-display font-semibold text-lg">{t('dashboard.activeTransactions')}</h2>
+               <Link to="/transactions" className="text-sm text-forest dark:text-forest-light font-semibold hover:underline">{t('dashboard.viewAll')} →</Link>
+@@ -367,39 +396,40 @@ export default function FarmerDashboard() {
+             )}
+           </div>
+ 
+-          <div className="space-y-4">
+             <div className="bg-white dark:bg-white/5 rounded-2xl shadow-card border border-black/5 dark:border-white/10 p-5">
+               <div className="flex items-center justify-between mb-3">
+-                <h2 className="font-display font-semibold">{t('dashboard.recentAlerts')}</h2>
+-                <Link to="/notifications" className="text-sm text-forest dark:text-forest-light font-semibold hover:underline">{t('dashboard.all')} →</Link>
++                <h2 className="font-display font-semibold">{t('dashboard.myLots')}</h2>
++                <Link to="/lots" className="text-sm text-forest dark:text-forest-light font-semibold hover:underline">{t('dashboard.all')} →</Link>
+               </div>
+-              {(notifications || []).length === 0 ? (
+-                <p className="text-sm text-ink/50 dark:text-paper/50">{t('dashboard.noAlerts')}</p>
++              {activeLots.length === 0 ? (
++                <p className="text-sm text-ink/50 dark:text-paper/50">{t('dashboard.noActiveLots')} <Link to="/lots" className="text-forest dark:text-forest-light underline">{t('dashboard.createOne')} →</Link></p>
+               ) : (
+                 <div className="space-y-2">
+-                  {notifications.slice(0, 3).map(n => (
+-                    <div key={n.id} className="text-sm border-l-2 border-marigold pl-3">
+-                      <div className="font-medium text-xs">{n.title}</div>
+-                      <div className="text-ink/50 dark:text-paper/50 text-xs">{n.message}</div>
++                  {activeLots.slice(0, 3).map(l => (
++                    <div key={l.id} className="text-xs border border-black/5 dark:border-white/10 rounded-lg px-3 py-2">
++                      <div className="font-semibold">{l.lot_number}</div>
++                      <div className="text-ink/50 dark:text-paper/50">{l.crop} · {l.quantity_kg.toLocaleString()} kg · {t('dashboard.grade')} {l.grade}</div>
+                     </div>
+                   ))}
+                 </div>
+               )}
+             </div>
++          </div>
+ 
++          <div className="space-y-4">
+             <div className="bg-white dark:bg-white/5 rounded-2xl shadow-card border border-black/5 dark:border-white/10 p-5">
+               <div className="flex items-center justify-between mb-3">
+-                <h2 className="font-display font-semibold">{t('dashboard.myLots')}</h2>
+-                <Link to="/lots" className="text-sm text-forest dark:text-forest-light font-semibold hover:underline">{t('dashboard.all')} →</Link>
++                <h2 className="font-display font-semibold">{t('dashboard.recentAlerts')}</h2>
++                <Link to="/notifications" className="text-sm text-forest dark:text-forest-light font-semibold hover:underline">{t('dashboard.all')} →</Link>
+               </div>
+-              {activeLots.length === 0 ? (
+-                <p className="text-sm text-ink/50 dark:text-paper/50">{t('dashboard.noActiveLots')} <Link to="/lots" className="text-forest dark:text-forest-light underline">{t('dashboard.createOne')} →</Link></p>
++              {(notifications || []).length === 0 ? (
++                <p className="text-sm text-ink/50 dark:text-paper/50">{t('dashboard.noAlerts')}</p>
+               ) : (
+                 <div className="space-y-2">
+-                  {activeLots.slice(0, 3).map(l => (
+-                    <div key={l.id} className="text-xs border border-black/5 dark:border-white/10 rounded-lg px-3 py-2">
+-                      <div className="font-semibold">{l.lot_number}</div>
+-                      <div className="text-ink/50 dark:text-paper/50">{l.crop} · {l.quantity_kg.toLocaleString()} kg · {t('dashboard.grade')} {l.grade}</div>
++                  {notifications.slice(0, 3).map(n => (
++                    <div key={n.id} className="text-sm border-l-2 border-marigold pl-3">
++                      <div className="font-medium text-xs">{n.title}</div>
++                      <div className="text-ink/50 dark:text-paper/50 text-xs">{n.message}</div>
+                     </div>
+                   ))}
+                 </div>
+diff --git a/frontend/src/pages/PriceForecast.jsx b/frontend/src/pages/PriceForecast.jsx
+index 311833f..f79e83d 100644
+--- a/frontend/src/pages/PriceForecast.jsx
++++ b/frontend/src/pages/PriceForecast.jsx
+@@ -45,15 +45,15 @@ const ML_COPY = {
+   naive: 'If price stays the same',
+   perQuintal: 'per quintal',
+   caution: 'Measured on past data. It cannot see weather, policy or sudden supply shocks.',
+-  unavailableTitle: 'No ML forecast for this crop and market yet',
++  unavailableTitle: (crop, market) => `No market-level ML forecast for ${crop} in ${market}`,
+   reasons: {
+-    insufficient_history: 'Needs at least 6 recorded prices in the last 28 days for this market. Prices build up as the app fetches live mandi data.',
++    insufficient_history: 'Needs at least 6 recorded prices in the last 28 days for this market, and no usable replay data exists for it. Live prices build up as the app fetches mandi data.',
+     stale_history: 'The latest recorded price is too old to forecast from safely.',
+     artifacts_missing: 'The model has not been trained on this server yet.',
+     artifacts_invalid: 'The saved model does not match this version of the app. Retrain it.',
+-    unsupported_crop: 'The model was not trained for this crop.',
++    unsupported_crop: 'The market-level model was not trained for this crop (too little validated data), so no prediction is made. Recorded prices, where they exist, are still shown in Past prices.',
+     invalid_history: 'The recorded prices could not be used.',
+-    ml_dependencies_missing: 'The ML packages are not installed on the server.',
++    ml_dependencies_missing: 'Server setup problem: the ML packages are not installed. This is not a data problem.',
+   },
+   warnings: {
+     market_not_in_training_data: 'This market was not in the training data; the forecast uses only its own recent prices.',
+@@ -68,6 +68,86 @@ function warningText(w) {
+   return hit ? ML_COPY.warnings[hit] : null
+ }
+ 
++const PAGE_COPY = {
++  subtitle: 'Recorded price history and, only where enough recent data and a validated model exist, a 7-day outlook. Availability differs by crop, market and scope.',
++}
++
++const ageWords = d => (d <= 0 ? 'today' : d === 1 ? 'yesterday' : d < 60 ? `${d} days ago` : d < 700 ? `${Math.round(d / 30)} months ago` : `${(d / 365).toFixed(1)} years ago`)
++const dateWords = d => new Date(`${d}T00:00:00Z`).toLocaleDateString('en-IN', { timeZone: 'UTC', day: 'numeric', month: 'short', year: 'numeric' })
++
++/** One plain-language line per ML status; `scope` is 'market' or 'state'. */
++function mlStatusText(m, crop, scopeName) {
++  if (!m) return 'Could not be checked (service error).'
++  switch (m.status) {
++    case 'available':
++      return m.is_historical_replay
++        ? `Historical replay only: built from prices up to ${m.as_of_date ? dateWords(m.as_of_date) : 'an old date'} (${m.history_age_days} days old). Not a current forecast.`
++        : `Available${m.as_of_date ? `, from prices up to ${dateWords(m.as_of_date)}` : ''}.`
++    case 'unsupported_crop': return `Not available: the model was not trained for ${crop} (too little validated data).`
++    case 'insufficient_history': return `Not available: not enough recent recorded prices for ${scopeName}.`
++    case 'stale_history': return `Not available: the newest recorded price for ${scopeName} is too old to forecast from.`
++    case 'no_state_history': return `Not available: no statewide price history for ${crop}.`
++    case 'no_state': return 'Not available: this market is not mapped to a state.'
++    case 'ml_dependencies_missing': return 'Server setup problem: the ML packages are not installed (not a data problem).'
++    case 'artifacts_missing': case 'artifacts_invalid': return 'Server setup problem: the saved model is missing or does not match this app version.'
++    case 'service_error': return 'Could not be checked (service error).'
++    default: return m.message || 'Not available.'
++  }
++}
++
++/** Replaces the old single "historical data unavailable" box: each scope is reported on its own line. */
++function AvailabilityPanel({ avail, error, crop, market, result }) {
++  if (error || !avail) {
++    return (
++      <div className="bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 text-red-700 dark:text-red-300 text-sm rounded-xl px-4 py-4 mb-8 flex items-start gap-2" role="alert">
++        <AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
++        <div>Service error: could not check which price data and forecasts exist for {crop} in {market}. This does not mean there is no data. Try again in a moment.</div>
++      </div>
++    )
++  }
++  const st = avail.recorded_history.state, mk = avail.recorded_history.market, lv = avail.live_history
++  const stateName = avail.state || 'its state'
++  const noRecords = !st.available && !mk.available
++  const rows = [
++    {
++      k: `Recorded prices: ${stateName} average`,
++      v: st.available
++        ? `${st.n_points} recorded days, latest ₹${st.latest_price_per_kg}/kg on ${dateWords(st.latest_date)} (${ageWords(st.age_days)}). One average price per day for the whole state, not ${market}. Shown in Past prices below.`
++        : `None for ${crop} in ${stateName}.`,
++    },
++    {
++      k: `Recorded prices: ${market} market only`,
++      v: mk.available
++        ? `${mk.n_points} recorded days, newest ${dateWords(mk.latest_date)} (${ageWords(mk.age_days)})${mk.age_days > 90 ? ': old, so it cannot support a current forecast' : ''}.`
++        : `None for ${crop} in ${market}.`,
++    },
++    {
++      k: `7-day trend forecast (${market})`,
++      v: result?.reason === 'no_demo_data'
++        ? 'Demo simulation requested, but no synthetic demo series exists for this crop and market.'
++        : `Not available: needs at least ${lv.required_for_trend_forecast} live price snapshots for this exact market; ${lv.points} so far.`,
++    },
++    { k: `ML forecast (${market} market)`, v: mlStatusText(avail.market_ml, crop, market) },
++    { k: `ML forecast (${stateName} average)`, v: mlStatusText(avail.state_ml, crop, stateName) + (avail.state_ml?.status === 'available' && !avail.state_ml.is_historical_replay ? ' A statewide figure, not a prediction for this market; shown in Past prices below.' : '') },
++  ]
++  return (
++    <div className="bg-wheat/50 border border-black/5 text-sm rounded-xl px-4 py-4 mb-8 max-w-[90ch]">
++      <div className="flex items-start gap-2 font-semibold">
++        <Info size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
++        <span>{noRecords ? `No recorded prices exist for ${crop} in ${market} or ${stateName}.` : `No 7-day trend forecast for ${crop} in ${market}. What exists at each scope:`}</span>
++      </div>
++      <dl className="mt-3 space-y-2">
++        {rows.map(r => (
++          <div key={r.k} className="grid sm:grid-cols-[250px_1fr] gap-x-4">
++            <dt className="text-ink/60">{r.k}</dt>
++            <dd className="text-ink/80">{r.v}</dd>
++          </div>
++        ))}
++      </dl>
++    </div>
++  )
++}
++
+ const fmt = (n, d = 2) => (typeof n === 'number' && isFinite(n) ? n.toFixed(d) : '–')
+ 
+ export default function PriceForecast() {
+@@ -90,6 +170,9 @@ export default function PriceForecast() {
+   const [showDemo, setShowDemo] = useState(false)
+   const [result, setResult] = useState(null)
+   const [ml, setMl] = useState(null)
++  const [mlError, setMlError] = useState(false)
++  const [avail, setAvail] = useState(null)
++  const [availError, setAvailError] = useState(false)
+   const [loading, setLoading] = useState(false)
+   const [error, setError] = useState('')
+ 
+@@ -103,14 +186,16 @@ export default function PriceForecast() {
+     setLoading(true)
+     setError('')
+     // ML forecast is additive: if the route is missing or fails, the page still works.
+-    const mlPromise = api.getMlForecast(crop, market, showDemo).then(setMl).catch(() => setMl(null))
++    // Replay is automatic and always labelled by the backend; the demo toggle only affects the synthetic trend forecast.
++    const mlPromise = api.getMlForecast(crop, market).then(r => { setMl(r); setMlError(false) }).catch(() => { setMl(null); setMlError(true) })
++    const availPromise = api.getForecastAvailability(crop, market).then(a => { setAvail(a); setAvailError(false) }).catch(() => { setAvail(null); setAvailError(true) })
+     try {
+       const data = await api.getForecast(crop, market, showDemo)
+       setResult(data)
+     } catch (err) {
+       setError(err.message)
+     } finally {
+-      await mlPromise
++      await Promise.all([mlPromise, availPromise])
+       setLoading(false)
+     }
+   }
+@@ -159,7 +244,7 @@ export default function PriceForecast() {
+       {/* Title + one control strip: the question is "which crop, which market" */}
+       <header className="mb-6 flex flex-col gap-1">
+         <h1 className="font-display text-3xl md:text-4xl font-bold">{t('forecast.title')}</h1>
+-        <p className="text-ink/60 max-w-[60ch]">{t('forecast.subtitle')}</p>
++        <p className="text-ink/60 max-w-[60ch]">{PAGE_COPY.subtitle}</p>
+       </header>
+ 
+       <form onSubmit={run} className="mb-8 flex flex-col md:flex-row md:items-end gap-3 md:gap-4 border-y border-black/5 py-4">
+@@ -187,15 +272,7 @@ export default function PriceForecast() {
+       {error && <div className="bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 text-red-700 dark:text-red-300 text-sm rounded-lg px-3 py-2 mb-4" role="alert">{error}</div>}
+       {loading && <LoadingSpinner label={t('forecast.running')} />}
+ 
+-      {result && !loading && !ok && (
+-        <div className="bg-wheat/50 border border-black/5 text-ink/60 text-sm rounded-xl px-4 py-4 mb-8 flex items-start gap-2">
+-          <Info size={16} className="mt-0.5 shrink-0" />
+-          <div>
+-            {t('forecast.historyUnavailable')}
+-            {!showDemo && <div className="mt-2 text-xs text-ink/50">{t('forecast.noHistoryHelp')}</div>}
+-          </div>
+-        </div>
+-      )}
++      {result && !loading && !ok && <AvailabilityPanel avail={avail} error={availError} crop={crop} market={market} result={result} />}
+ 
+       {ok && !loading && (
+         <>
+@@ -295,7 +372,13 @@ export default function PriceForecast() {
+ 
+       <PastPrices crop={crop} market={market} cropLabel={getLocalizedCropName(crop, t)} />
+ 
+-      {!loading && ml && <MlPanel ml={ml} currentKg={ok ? current : null} />}
++      {!loading && ml && <MlPanel ml={ml} crop={crop} market={market} currentKg={ok ? current : null} />}
++      {!loading && !ml && mlError && (
++        <div className="text-sm text-ink/70 flex items-start gap-2 mb-10 max-w-[80ch]" role="alert">
++          <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
++          <span>Service error: the ML forecast could not be loaded. This does not mean no forecast exists. Try again in a moment.</span>
++        </div>
++      )}
+       {/* Fetched once, independent of the crop/market form; it only highlights the selected crop. */}
+       <MlAnalysis crop={crop} />
+     </div>
+@@ -335,13 +418,13 @@ function ChartTip({ active, payload, label, t, dark }) {
+   )
+ }
+ 
+-function MlPanel({ ml, currentKg }) {
++function MlPanel({ ml, crop, market, currentKg }) {
+   const fc = ml.forecast
+   return (
+     <section className="border-t border-black/5 pt-8 mb-10" aria-labelledby="ml-heading">
+       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-5">
+         <h2 id="ml-heading" className="font-display text-xl font-bold">{ML_COPY.heading}</h2>
+-        <span className="text-sm text-ink/50">{ML_COPY.sub}</span>
++        <span className="text-sm text-ink/50">{ML_COPY.sub} · {market} market</span>
+         {ml.available && (
+           <span className={`text-xs font-semibold rounded-full px-2.5 py-0.5 ${ml.is_historical_replay ? 'bg-amber-100 text-amber-800' : 'bg-gain/15 text-gain'}`}>
+             {ml.is_historical_replay ? ML_COPY.replay : ML_COPY.live}
+@@ -353,7 +436,7 @@ function MlPanel({ ml, currentKg }) {
+         <div className="bg-wheat/50 border border-black/5 rounded-xl px-4 py-4 text-sm flex items-start gap-2 max-w-[80ch]">
+           <Info size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+           <div>
+-            <div className="font-semibold">{ML_COPY.unavailableTitle}</div>
++            <div className="font-semibold">{ML_COPY.unavailableTitle(crop, market)}</div>
+             <div className="text-ink/60 mt-1">{ML_COPY.reasons[ml.reason] || ml.message}</div>
+           </div>
+         </div>
