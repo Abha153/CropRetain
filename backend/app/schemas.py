@@ -323,6 +323,19 @@ class SoilAdvisorRequest(BaseModel):
     location: Optional[str] = None          # a market/location name known to CropRetain
 
 
+class SoilHealthRequest(BaseModel):
+    """Soil-test values as printed on a lab report / Soil Health Card. Each is
+    optional; at least one is required (checked in the router). Units follow
+    the cited rating chart: organic carbon in %, N/P/K in kg/ha, EC as printed
+    by the chart (milli mhos/cm2)."""
+    organic_carbon: Optional[float] = Field(default=None, ge=0, le=100)
+    nitrogen: Optional[float] = Field(default=None, ge=0, le=10000)
+    phosphorus: Optional[float] = Field(default=None, ge=0, le=10000)
+    potassium: Optional[float] = Field(default=None, ge=0, le=10000)
+    ph: Optional[float] = Field(default=None, ge=0, le=14)
+    ec: Optional[float] = Field(default=None, ge=0, le=100)
+
+
 # ---------- Profit calculator ----------
 
 class ProfitScenario(BaseModel):
