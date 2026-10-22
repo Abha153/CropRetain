@@ -1,0 +1,355 @@
+diff --git a/backend/app/routers/soil.py b/backend/app/routers/soil.py
+index 7ca08b9..564a438 100644
+--- a/backend/app/routers/soil.py
++++ b/backend/app/routers/soil.py
+@@ -22,6 +22,7 @@ from app.services.soil_advisor import (
+     DATA_QUALITY_ESTIMATED, DATA_QUALITY_UNAVAILABLE, INPUT_PROVENANCE,
+ )
+ from app.services.soil_crop_rules import TEXTURE_CLASSES, SEASONS, IRRIGATION_LEVELS
++from app.services.soil_health import rate_soil_health
+ 
+ router = APIRouter(prefix="/soil", tags=["soil"])
+ 
+@@ -71,6 +72,20 @@ def _financial_for(crop: str, quantity_kg: float, location: str, db: Session) ->
+     }
+ 
+ 
++@router.post("/health-check")
++def health_check(payload: schemas.SoilHealthRequest):
++    """Rate soil-test values (organic carbon, N, P, K, pH, EC) against the
++    cited TNAU rating chart. Stores nothing, computes no money figures."""
++    values = payload.model_dump()
++    if all(v is None for v in values.values()):
++        raise AppError(400, "SOIL_HEALTH_NO_INPUT",
++                       "Provide at least one soil-test value: organic_carbon, nitrogen, "
++                       "phosphorus, potassium, ph or ec.")
++    result = rate_soil_health(**values)
++    result["regional_limitation"] = REGIONAL_LIMITATION
++    return result
++
++
+ @router.post("/advise")
+ def advise(payload: schemas.SoilAdvisorRequest, db: Session = Depends(get_db)):
+     if payload.soil_texture is not None and payload.soil_texture not in TEXTURE_CLASSES:
+diff --git a/backend/app/schemas.py b/backend/app/schemas.py
+index ce10b86..e5b9bb9 100644
+--- a/backend/app/schemas.py
++++ b/backend/app/schemas.py
+@@ -323,6 +323,19 @@ class SoilAdvisorRequest(BaseModel):
+     location: Optional[str] = None          # a market/location name known to CropRetain
+ 
+ 
++class SoilHealthRequest(BaseModel):
++    """Soil-test values as printed on a lab report / Soil Health Card. Each is
++    optional; at least one is required (checked in the router). Units follow
++    the cited rating chart: organic carbon in %, N/P/K in kg/ha, EC as printed
++    by the chart (milli mhos/cm2)."""
++    organic_carbon: Optional[float] = Field(default=None, ge=0, le=100)
++    nitrogen: Optional[float] = Field(default=None, ge=0, le=10000)
++    phosphorus: Optional[float] = Field(default=None, ge=0, le=10000)
++    potassium: Optional[float] = Field(default=None, ge=0, le=10000)
++    ph: Optional[float] = Field(default=None, ge=0, le=14)
++    ec: Optional[float] = Field(default=None, ge=0, le=100)
++
++
+ # ---------- Profit calculator ----------
+ 
+ class ProfitScenario(BaseModel):
+diff --git a/backend/app/services/soil_health.py b/backend/app/services/soil_health.py
+new file mode 100644
+index 0000000..59b01a2
+--- /dev/null
++++ b/backend/app/services/soil_health.py
+@@ -0,0 +1,150 @@
++"""
++Soil-test rating: classifies a farmer's soil-test values (organic carbon,
++available N / P / K, pH, EC) against ONE cited rating chart.
++
++Source: TNAU Agritech "Soil Rating Chart" (two pages carry the same chart,
++read on 2026-10-22). It is Tamil Nadu material, not Chhattisgarh-specific
++(see REGIONAL_LIMITATION in soil_crop_rules.py).
++
++Honesty rules (same spirit as soil_crop_rules.py):
++  * Only the thresholds printed by the source are used; nothing is invented.
++  * Where the printed chart is inconsistent or silent, the result says so
++    instead of guessing:
++      - Organic carbon "medium" is printed as 0.5-7.5 % but "high" starts at
++        >0.75 %, so 7.5 is almost certainly a typo for 0.75. We read medium
++        as 0.5-0.75 and flag the rating `interpreted`.
++      - pH between 8.5 and 8.9 has no class in the chart -> `unclassified`.
++      - EC exact boundaries (1, 2, 4) are not specified by the chart; we use
++        [1,2) -> germination, [2,4] -> sensitive crops, >4 -> injurious.
++  * No fertiliser quantities are produced: none are cited. The output only
++    says where a value sits and points to the Soil Health Card / KVK.
++  * Units are those printed by the source; EC is printed as
++    "milli mhos/cm2", so confirm the unit on your own report.
++"""
++from typing import Optional
++
++SOURCE_ID = "tnau_soil_rating_chart"
++
++SOURCES = {
++    SOURCE_ID: {
++        "title": "Soil Rating Chart (soil fertility / soil test rating)",
++        "publisher": "TNAU Agritech Portal",
++        "url": "https://agritech.tnau.ac.in/agriculture/agri_soil_soilratingchart.html",
++        "region_scope": "Tamil Nadu",
++    },
++}
++
++DATA_QUALITY_ESTIMATED = "ESTIMATED"
++
++# parameter -> (unit as printed, low_below, high_above, interpreted_note or None)
++# value < low_below -> low; value > high_above -> high; otherwise medium.
++_NUTRIENT_CHART = {
++    "organic_carbon": ("%", 0.5, 0.75,
++                       "Chart prints medium as 0.5-7.5 % but high as >0.75 %; "
++                       "medium is read here as 0.5-0.75 %."),
++    "nitrogen": ("kg/ha", 240, 480, None),
++    "phosphorus": ("kg/ha", 11.0, 22, None),
++    "potassium": ("kg/ha", 110, 280, None),
++}
++
++PARAMETER_ORDER = ["organic_carbon", "nitrogen", "phosphorus", "potassium", "ph", "ec"]
++
++NO_DOSE_NOTE = (
++    "This rates your values against one published chart. It does not give "
++    "fertiliser quantities: take those from your Soil Health Card "
++    "recommendation or your local KVK."
++)
++
++
++def _rate_nutrient(name: str, value: float) -> dict:
++    unit, low_below, high_above, note = _NUTRIENT_CHART[name]
++    if value < low_below:
++        rating = "low"
++    elif value > high_above:
++        rating = "high"
++    else:
++        rating = "medium"
++    out = {
++        "parameter": name, "value": value, "unit": unit, "rating": rating,
++        "thresholds": {"low_below": low_below, "high_above": high_above},
++        "source": SOURCE_ID, "interpreted": note is not None,
++    }
++    if note:
++        out["note"] = note
++    return out
++
++
++def _rate_ph(value: float) -> dict:
++    if value < 6.0:
++        rating, label = "acid", "Acid (below 6.0)"
++    elif value <= 8.5:
++        rating, label = "normal_to_saline", "Normal to saline (6.0-8.5)"
++    elif value < 8.9:
++        rating, label = "unclassified", "Between 8.5 and 8.9: the chart gives no class"
++    elif value <= 9.0:
++        rating, label = "tending_alkaline", "Tending to become alkaline (8.9-9.0)"
++    else:
++        rating, label = "alkaline", "Alkaline (above 9.0)"
++    return {"parameter": "ph", "value": value, "unit": None, "rating": rating,
++            "label": label, "source": SOURCE_ID, "interpreted": False}
++
++
++def _rate_ec(value: float) -> dict:
++    if value < 1:
++        rating, label = "normal", "Normal (below 1)"
++    elif value < 2:
++        rating, label = "critical_for_germination", "Critical for germination (1-2)"
++    elif value <= 4:
++        rating, label = "critical_for_sensitive_crops", "Critical for growth of sensitive crops (2-4)"
++    else:
++        rating, label = "injurious_to_most_crops", "Injurious to most crops (above 4)"
++    return {"parameter": "ec", "value": value, "unit": "milli mhos/cm2 (as printed by the source)",
++            "rating": rating, "label": label, "source": SOURCE_ID,
++            "interpreted": True,
++            "note": "The chart does not say whether the exact values 1, 2 and 4 "
++                    "belong to the lower or upper class; this check uses [1,2), [2,4], >4."}
++
++
++# Ratings that deserve the farmer's attention first.
++_ATTENTION = {
++    "low", "acid", "alkaline", "tending_alkaline", "unclassified",
++    "critical_for_germination", "critical_for_sensitive_crops",
++    "injurious_to_most_crops",
++}
++
++
++def rate_soil_health(*, organic_carbon: Optional[float] = None,
++                     nitrogen: Optional[float] = None,
++                     phosphorus: Optional[float] = None,
++                     potassium: Optional[float] = None,
++                     ph: Optional[float] = None,
++                     ec: Optional[float] = None) -> dict:
++    """Rate every provided value; parameters not provided are listed under
++    `not_provided`, never estimated."""
++    given = {
++        "organic_carbon": organic_carbon, "nitrogen": nitrogen,
++        "phosphorus": phosphorus, "potassium": potassium, "ph": ph, "ec": ec,
++    }
++    ratings = []
++    for name in PARAMETER_ORDER:
++        v = given[name]
++        if v is None:
++            continue
++        if name == "ph":
++            ratings.append(_rate_ph(v))
++        elif name == "ec":
++            ratings.append(_rate_ec(v))
++        else:
++            ratings.append(_rate_nutrient(name, v))
++    return {
++        "data_quality": DATA_QUALITY_ESTIMATED if ratings else "UNAVAILABLE",
++        "method": "RATING_CHART_LOOKUP",
++        "ratings": ratings,
++        "needs_attention": [r["parameter"] for r in ratings if r["rating"] in _ATTENTION],
++        "not_provided": [n for n in PARAMETER_ORDER if given[n] is None],
++        "note": NO_DOSE_NOTE,
++        "sources": [{"id": SOURCE_ID, **SOURCES[SOURCE_ID]}] if ratings else [],
++    }
++
++
++__all__ = ["rate_soil_health", "SOURCES", "SOURCE_ID", "PARAMETER_ORDER"]
+diff --git a/backend/tests/test_soil_health.py b/backend/tests/test_soil_health.py
+new file mode 100644
+index 0000000..f137d75
+--- /dev/null
++++ b/backend/tests/test_soil_health.py
+@@ -0,0 +1,109 @@
++"""
++Tests for services/soil_health.py and POST /soil/health-check.
++
++Pins down: thresholds match the cited TNAU chart exactly (incl. boundaries),
++chart inconsistencies are flagged rather than guessed, missing inputs are
++reported as not_provided, no fertiliser dose is ever produced, and invalid
++input is rejected.
++"""
++import os
++import sys
++
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
++
++import pytest
++
++from app.services.soil_health import rate_soil_health, SOURCES, SOURCE_ID
++
++
++def _rating(result, parameter):
++    return next(r for r in result["ratings"] if r["parameter"] == parameter)
++
++
++@pytest.mark.parametrize("param,value,expected", [
++    ("nitrogen", 239.9, "low"), ("nitrogen", 240, "medium"), ("nitrogen", 480, "medium"), ("nitrogen", 480.1, "high"),
++    ("phosphorus", 10.9, "low"), ("phosphorus", 11, "medium"), ("phosphorus", 22, "medium"), ("phosphorus", 22.1, "high"),
++    ("potassium", 109.9, "low"), ("potassium", 110, "medium"), ("potassium", 280, "medium"), ("potassium", 280.1, "high"),
++    ("organic_carbon", 0.49, "low"), ("organic_carbon", 0.5, "medium"), ("organic_carbon", 0.75, "medium"), ("organic_carbon", 0.76, "high"),
++])
++def test_nutrient_boundaries_match_cited_chart(param, value, expected):
++    assert _rating(rate_soil_health(**{param: value}), param)["rating"] == expected
++
++
++@pytest.mark.parametrize("ph,expected", [
++    (5.9, "acid"), (6.0, "normal_to_saline"), (8.5, "normal_to_saline"),
++    (8.6, "unclassified"), (8.89, "unclassified"),
++    (8.9, "tending_alkaline"), (9.0, "tending_alkaline"), (9.1, "alkaline"),
++])
++def test_ph_classes_and_chart_gap(ph, expected):
++    assert _rating(rate_soil_health(ph=ph), "ph")["rating"] == expected
++
++
++@pytest.mark.parametrize("ec,expected", [
++    (0.9, "normal"), (1, "critical_for_germination"), (1.9, "critical_for_germination"),
++    (2, "critical_for_sensitive_crops"), (4, "critical_for_sensitive_crops"),
++    (4.1, "injurious_to_most_crops"),
++])
++def test_ec_classes(ec, expected):
++    assert _rating(rate_soil_health(ec=ec), "ec")["rating"] == expected
++
++
++def test_interpreted_flags_are_set_where_chart_is_ambiguous():
++    r = rate_soil_health(organic_carbon=0.6, nitrogen=300, ec=1.5)
++    assert _rating(r, "organic_carbon")["interpreted"] is True
++    assert "7.5" in _rating(r, "organic_carbon")["note"]
++    assert _rating(r, "ec")["interpreted"] is True
++    assert _rating(r, "nitrogen")["interpreted"] is False
++
++
++def test_missing_values_are_reported_not_estimated():
++    r = rate_soil_health(nitrogen=100)
++    assert [x["parameter"] for x in r["ratings"]] == ["nitrogen"]
++    assert set(r["not_provided"]) == {"organic_carbon", "phosphorus", "potassium", "ph", "ec"}
++
++
++def test_needs_attention_lists_only_concerning_ratings():
++    r = rate_soil_health(nitrogen=100, phosphorus=15, potassium=300, ph=7.0, ec=0.5)
++    assert r["needs_attention"] == ["nitrogen"]
++
++
++def test_every_rating_cites_a_known_source_and_no_dose_is_given():
++    r = rate_soil_health(organic_carbon=0.6, nitrogen=100, phosphorus=5, potassium=50, ph=5.0, ec=3)
++    assert SOURCE_ID in SOURCES
++    assert all(x["source"] == SOURCE_ID for x in r["ratings"])
++    assert r["sources"][0]["id"] == SOURCE_ID
++    flat = str(r).lower()
++    assert "dose" not in flat and "kg/acre" not in flat
++
++
++def test_nothing_provided_is_unavailable():
++    r = rate_soil_health()
++    assert r["data_quality"] == "UNAVAILABLE" and r["ratings"] == [] and r["sources"] == []
++
++
++# ---------------------------------------------------------------- router ----
++# These need the app's dependencies (fastapi etc.); no DB is touched.
++
++def _client():
++    from fastapi.testclient import TestClient
++    from app.main import app
++    return TestClient(app)
++
++
++def test_endpoint_rates_values_and_flags_limitation():
++    r = _client().post("/soil/health-check", json={"nitrogen": 200, "ph": 7.2})
++    assert r.status_code == 200
++    body = r.json()
++    assert body["method"] == "RATING_CHART_LOOKUP"
++    assert {x["parameter"]: x["rating"] for x in body["ratings"]} == {"nitrogen": "low", "ph": "normal_to_saline"}
++    assert "Chhattisgarh" in body["regional_limitation"]
++
++
++def test_endpoint_rejects_empty_input():
++    r = _client().post("/soil/health-check", json={})
++    assert r.status_code == 400 and r.json()["code"] == "SOIL_HEALTH_NO_INPUT"
++
++
++@pytest.mark.parametrize("payload", [{"ph": 15}, {"nitrogen": -1}, {"organic_carbon": 101}, {"ec": -0.1}])
++def test_endpoint_pydantic_bounds(payload):
++    assert _client().post("/soil/health-check", json=payload).status_code == 422
+diff --git a/docs/SOIL_ADVISOR.md b/docs/SOIL_ADVISOR.md
+index 860ef51..2698f6b 100644
+--- a/docs/SOIL_ADVISOR.md
++++ b/docs/SOIL_ADVISOR.md
+@@ -29,8 +29,15 @@ Rules live in `backend/app/services/soil_crop_rules.py`; every claim has a sourc
+ - Water requirements are shown as notes with their source, never pass/fail, because mapping "rainfed/limited/assured" to millimetres would need an invented conversion.
+ - The other 7 catalogue crops are `UNAVAILABLE` until a citable source is added to `soil_crop_rules.py`.
+ 
++## Soil-test rating (`POST /soil/health-check`)
++Takes any of `organic_carbon` (%), `nitrogen`, `phosphorus`, `potassium` (kg/ha), `ph`, `ec` (at least one) and rates each against one cited chart (TNAU Soil Rating Chart, read 2026-10-22): low / medium / high for nutrients, class names for pH and EC. `needs_attention` lists low nutrients and non-normal pH/EC; values you did not give appear under `not_provided`, never estimated.
++- The chart is inconsistent in places, and the result says so rather than guessing: organic-carbon "medium" is printed as 0.5-7.5 % but "high" starts above 0.75 %, so we read medium as 0.5-0.75 % (flagged `interpreted`); pH 8.5-8.9 has no class (`unclassified`); the chart does not say which class the exact EC values 1, 2 and 4 belong to (we use [1,2), [2,4], >4, flagged).
++- EC is printed by the source as "milli mhos/cm2"; confirm the unit on your own report.
++- It gives **no fertiliser quantities** (none are cited). It is Tamil Nadu material, not Chhattisgarh-specific; confirm with your Soil Health Card or KVK.
++- Not yet connected to the crop screen in `/soil/advise`, and no UI yet.
++
+ ## Not included
+-Photo- or sensor-based soil detection, N/P/K / organic carbon / salinity checks, district-specific rules, yield prediction, and cultivation-cost accounting (net return excludes seed, fertiliser, labour and irrigation costs).
++Photo- or sensor-based soil detection, district-specific rules, crop-specific nutrient requirements, fertiliser doses, yield prediction, and cultivation-cost accounting (net return excludes seed, fertiliser, labour and irrigation costs).
+ 
+ ## Auth
+ Unauthenticated, like `/market/compare` and `/advisor/recommend` which it builds on; the frontend route is farmer-only. Nothing is stored.
+@@ -39,4 +46,4 @@ Unauthenticated, like `/market/compare` and `/advisor/recommend` which it builds
+ The 54 new UI keys (`navSoil`, `soil.*`) were drafted by an AI assistant for all 14 non-English locales and **need native-speaker review** (especially Odia, Assamese, Bhojpuri, Maithili). Server-supplied source titles stay in English.
+ 
+ ## Tests
+-`backend/tests/test_soil_advisor.py` (25 tests): citation integrity, disagreeing sources, UNAVAILABLE handling, input validation, and that net-return figures equal an independent `net_profit_breakdown` call.
++`backend/tests/test_soil_advisor.py` (25 tests) and `backend/tests/test_soil_health.py` (rating boundaries, chart-gap flags, no-dose, endpoint validation): citation integrity, disagreeing sources, UNAVAILABLE handling, input validation, and that net-return figures equal an independent `net_profit_breakdown` call.

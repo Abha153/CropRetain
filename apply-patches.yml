@@ -1,0 +1,54 @@
+name: Apply patches
+
+# Upload *.patch files into the `patches/` folder on GitHub. This workflow applies
+# them in name order on a NEW branch (never on main) and deletes the applied patch
+# files on that branch. Then click "Compare & pull request" on the repo page,
+# check the changes/tests, and merge.
+
+on:
+  push:
+    branches: [main]
+    paths: ['patches/*.patch']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply patches onto a new branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(patches/*.patch)
+          if [ ${#files[@]} -eq 0 ]; then echo "No patches to apply."; exit 0; fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          branch="auto/apply-patches-${GITHUB_RUN_ID}"
+          git checkout -b "$branch"
+
+          applied=()
+          for f in "${files[@]}"; do
+            if git apply --reverse --check "$f" 2>/dev/null; then
+              echo "SKIP (already applied): $f"
+            else
+              git apply --check "$f"   # fails the job with a clear error if it does not fit
+              git apply "$f"
+              echo "APPLIED: $f"
+              applied+=("$f")
+            fi
+            git rm -q --cached "$f" 2>/dev/null || true
+            rm -f "$f"
+          done
+
+          git add -A
+          if git diff --cached --quiet; then echo "Nothing changed."; exit 0; fi
+          git commit -m "Apply patches: ${applied[*]:-none}"
+          git push origin "$branch"
+          echo "Branch pushed: $branch. Open a pull request from it on GitHub."
