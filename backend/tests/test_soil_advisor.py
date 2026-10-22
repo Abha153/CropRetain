@@ -231,3 +231,39 @@ def test_existing_market_compare_still_works(client, db):
     _seed_demo(db, "Soybean", {m["name"]: 4300.0 for m in MARKETS[:6]})
     r = client.get("/market/compare", params={"crop": "Soybean", "quantity_kg": 500, "location": "Bilaspur"})
     assert r.status_code == 200 and r.json()["options"]
+
+
+# ------------------------------------------- soil-test values in /advise ----
+
+def test_advise_accepts_soil_test_values_alone(client):
+    r = client.post("/soil/advise", json={"nitrogen": 200, "phosphorus": 30})
+    assert r.status_code == 200
+    body = r.json()
+    assert {x["parameter"]: x["rating"] for x in body["soil_health"]["ratings"]} == {
+        "nitrogen": "low", "phosphorus": "high"}
+    assert body["recommendations"] == []          # no pH/texture/season -> no crop checks
+    assert any(s["id"] == "tnau_soil_rating_chart" for s in body["sources"])
+
+
+def test_advise_rates_ph_in_both_crop_checks_and_soil_health(client):
+    body = client.post("/soil/advise", json={"soil_ph": 5.0, "nitrogen": 300}).json()
+    ph = next(x for x in body["soil_health"]["ratings"] if x["parameter"] == "ph")
+    assert ph["rating"] == "acid"
+    assert body["recommendations"]               # crop screen still runs on pH
+
+
+def test_advise_without_test_values_has_null_soil_health(client):
+    body = client.post("/soil/advise", json={"soil_texture": "loam"}).json()
+    assert body["soil_health"] is None
+
+
+def test_soil_test_values_do_not_change_crop_checks(client):
+    a = client.post("/soil/advise", json={"soil_ph": 6.0, "season": "rabi"}).json()
+    b = client.post("/soil/advise", json={"soil_ph": 6.0, "season": "rabi",
+                                          "nitrogen": 50, "ec": 5}).json()
+    assert a["recommendations"] == b["recommendations"]
+
+
+@pytest.mark.parametrize("payload", [{"ec": -1}, {"nitrogen": 20000}, {"organic_carbon": 101}])
+def test_advise_soil_test_bounds(client, payload):
+    assert client.post("/soil/advise", json={"soil_ph": 6.0, **payload}).status_code == 422

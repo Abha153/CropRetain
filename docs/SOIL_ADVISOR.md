@@ -34,7 +34,7 @@ Takes any of `organic_carbon` (%), `nitrogen`, `phosphorus`, `potassium` (kg/ha)
 - The chart is inconsistent in places, and the result says so rather than guessing: organic-carbon "medium" is printed as 0.5-7.5 % but "high" starts above 0.75 %, so we read medium as 0.5-0.75 % (flagged `interpreted`); pH 8.5-8.9 has no class (`unclassified`); the chart does not say which class the exact EC values 1, 2 and 4 belong to (we use [1,2), [2,4], >4, flagged).
 - EC is printed by the source as "milli mhos/cm2"; confirm the unit on your own report.
 - It gives **no fertiliser quantities** (none are cited). It is Tamil Nadu material, not Chhattisgarh-specific; confirm with your Soil Health Card or KVK.
-- Not yet connected to the crop screen in `/soil/advise`, and no UI yet.
+- `POST /soil/advise` also accepts these soil-test values and returns the same ratings as `soil_health`. They do not change the crop checks. There is no UI yet.
 
 ## Not included
 Photo- or sensor-based soil detection, district-specific rules, crop-specific nutrient requirements, fertiliser doses, yield prediction, and cultivation-cost accounting (net return excludes seed, fertiliser, labour and irrigation costs).

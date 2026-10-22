@@ -321,6 +321,14 @@ class SoilAdvisorRequest(BaseModel):
     irrigation: Optional[str] = None        # rainfed | limited | assured
     quantity_kg: Optional[float] = Field(default=None, gt=0)
     location: Optional[str] = None          # a market/location name known to CropRetain
+    # Optional soil-test values (same units and bounds as SoilHealthRequest).
+    # They are rated against the cited chart and returned as `soil_health`;
+    # they do not change the crop-suitability checks.
+    organic_carbon: Optional[float] = Field(default=None, ge=0, le=100)
+    nitrogen: Optional[float] = Field(default=None, ge=0, le=10000)
+    phosphorus: Optional[float] = Field(default=None, ge=0, le=10000)
+    potassium: Optional[float] = Field(default=None, ge=0, le=10000)
+    ec: Optional[float] = Field(default=None, ge=0, le=100)
 
 
 class SoilHealthRequest(BaseModel):
