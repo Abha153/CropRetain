@@ -22,6 +22,7 @@ from app.services.soil_advisor import (
     DATA_QUALITY_ESTIMATED, DATA_QUALITY_UNAVAILABLE, INPUT_PROVENANCE,
 )
 from app.services.soil_crop_rules import TEXTURE_CLASSES, SEASONS, IRRIGATION_LEVELS
+from app.services.soil_health import rate_soil_health
 
 router = APIRouter(prefix="/soil", tags=["soil"])
 
@@ -69,6 +70,20 @@ def _financial_for(crop: str, quantity_kg: float, location: str, db: Session) ->
         "gain_vs_nearest_market": cmp["profit_gain_vs_nearest_market"],
         "market_data_summary": cmp["data_source_summary"],
     }
+
+
+@router.post("/health-check")
+def health_check(payload: schemas.SoilHealthRequest):
+    """Rate soil-test values (organic carbon, N, P, K, pH, EC) against the
+    cited TNAU rating chart. Stores nothing, computes no money figures."""
+    values = payload.model_dump()
+    if all(v is None for v in values.values()):
+        raise AppError(400, "SOIL_HEALTH_NO_INPUT",
+                       "Provide at least one soil-test value: organic_carbon, nitrogen, "
+                       "phosphorus, potassium, ph or ec.")
+    result = rate_soil_health(**values)
+    result["regional_limitation"] = REGIONAL_LIMITATION
+    return result
 
 
 @router.post("/advise")
