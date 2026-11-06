@@ -1,0 +1,796 @@
+diff --git a/backend/app/auth_utils.py b/backend/app/auth_utils.py
+index 00bda62..6f5cbb0 100644
+--- a/backend/app/auth_utils.py
++++ b/backend/app/auth_utils.py
+@@ -61,6 +61,8 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
+         user = db.query(models.Buyer).filter(models.Buyer.email == email).first()
+     elif role == "transporter":
+         user = db.query(models.Transporter).filter(models.Transporter.email == email).first()
++    elif role == "storage_provider":
++        user = db.query(models.StorageProvider).filter(models.StorageProvider.email == email).first()
+     elif role == "admin":
+         # Admin isn't backed by a DB row -- it's a single configured
+         # operator account (see app/config.py). The token subject IS the
+@@ -100,6 +102,12 @@ def require_transporter(current=Depends(get_current_user)):
+     return current["user"]
+ 
+ 
++def require_storage_provider(current=Depends(get_current_user)):
++    if current["role"] != "storage_provider":
++        raise HTTPException(status_code=403, detail="Storage provider account required")
++    return current["user"]
++
++
+ def require_farmer_or_transporter(current=Depends(get_current_user)):
+     """For endpoints (negotiation, chat, reviews) shared by both
+     participants of a transport request -- returns (user, role) so the
+diff --git a/backend/app/database.py b/backend/app/database.py
+index 6e5a856..83f7c94 100644
+--- a/backend/app/database.py
++++ b/backend/app/database.py
+@@ -149,6 +149,12 @@ def run_lightweight_migrations():
+             add_column_if_missing("transporters", "service_routes", "JSON")
+             add_column_if_missing("transporters", "verification_status", "VARCHAR NOT NULL DEFAULT 'PENDING'")
+             add_column_if_missing("transporters", "verification_documents", "JSON")
++
++            # Storage partner onboarding (storage_providers / storage_rooms are
++            # new tables, created by create_all()).
++            add_column_if_missing("storage_facilities", "provider_id", "INTEGER")
++            add_column_if_missing("storage_facilities", "operating_hours", "VARCHAR")
++            add_column_if_missing("storage_facilities", "images", "JSON")
+         return
+ 
+     # Postgres path: only the columns added after the Supabase migration.
+@@ -246,4 +252,10 @@ def run_lightweight_migrations():
+             "ALTER TABLE transporters ADD COLUMN IF NOT EXISTS verification_status VARCHAR NOT NULL DEFAULT 'PENDING'"
+         ))
+         conn.execute(text("ALTER TABLE transporters ADD COLUMN IF NOT EXISTS verification_documents JSON"))
++        # Storage partner onboarding columns (storage_providers / storage_rooms are created by create_all).
++        conn.execute(text(
++            "ALTER TABLE storage_facilities ADD COLUMN IF NOT EXISTS provider_id INTEGER REFERENCES storage_providers(id)"
++        ))
++        conn.execute(text("ALTER TABLE storage_facilities ADD COLUMN IF NOT EXISTS operating_hours VARCHAR"))
++        conn.execute(text("ALTER TABLE storage_facilities ADD COLUMN IF NOT EXISTS images JSON"))
+         conn.commit()
+diff --git a/backend/app/main.py b/backend/app/main.py
+index ccfc9d5..e8760f6 100644
+--- a/backend/app/main.py
++++ b/backend/app/main.py
+@@ -14,6 +14,7 @@ from app.routers import (
+ from app.routers import lots, buyer_demands, buyer_verification
+ from app.routers import transactions, payments, grievances, receipts
+ from app.routers import storage, transport, ratings, trip_reviews
++from app.routers import storage_provider
+ from app.routers import weather
+ from app.routers import offer_negotiation
+ from app.routers import transporters, transport_negotiation
+@@ -151,6 +152,7 @@ app.include_router(payments.router)
+ app.include_router(receipts.router)
+ app.include_router(grievances.router)
+ app.include_router(storage.router)
++app.include_router(storage_provider.router)
+ app.include_router(transport.router)
+ app.include_router(transporters.router)
+ app.include_router(transport_negotiation.router)
+diff --git a/backend/app/models.py b/backend/app/models.py
+index 4e1bff2..ad25b7c 100644
+--- a/backend/app/models.py
++++ b/backend/app/models.py
+@@ -439,6 +439,32 @@ class Lot(Base):
+     farmer = relationship("Farmer", back_populates="lots")
+ 
+ 
++class StorageProvider(Base):
++    """Storage partner account (warehouse / cold-storage owner or operator).
++
++    The onboarding spec points `user_id` at a `User` table, but this codebase
++    has no unified User model -- Farmer / Buyer / Transporter are separate
++    role tables that each carry their own email + bcrypt hash + JWT role. So
++    StorageProvider follows that same established pattern as a fourth role
++    (role="storage_provider") instead of introducing a parallel user system."""
++    __tablename__ = "storage_providers"
++
++    id = Column(Integer, primary_key=True, index=True)
++    name = Column(String, nullable=False)
++    email = Column(String, unique=True, index=True, nullable=False)
++    password_hash = Column(String, nullable=False)
++    business_name = Column(String, nullable=False)
++    contact_phone = Column(String, nullable=False)
++    alternate_phone = Column(String, nullable=True)
++    preferred_language = Column(String, default="en")
++    # PENDING / VERIFIED / REJECTED
++    verification_status = Column(String, nullable=False, default="PENDING")
++    created_at = Column(DateTime, default=now)
++    last_login = Column(DateTime, nullable=True)
++
++    facilities = relationship("StorageFacility", back_populates="provider")
++
++
+ class StorageFacility(Base):
+     """Phase 6 — Storage facilities (warehouses, cold storage, etc.)."""
+     __tablename__ = "storage_facilities"
+@@ -465,7 +491,36 @@ class StorageFacility(Base):
+     is_demo = Column(Boolean, default=True)
+     created_at = Column(DateTime, default=now)
+ 
++    # Partner onboarding extensions. provider_id is nullable because the
++    # seeded demo facilities have no owning provider.
++    provider_id = Column(Integer, ForeignKey("storage_providers.id"), nullable=True, index=True)
++    operating_hours = Column(String, nullable=True)
++    images = Column(JSON, default=list)
++
+     bookings = relationship("StorageBooking", back_populates="facility")
++    provider = relationship("StorageProvider", back_populates="facilities")
++    rooms = relationship("StorageRoom", back_populates="facility", cascade="all, delete-orphan")
++
++
++class StorageRoom(Base):
++    """A room / chamber inside a facility, for room-level inventory.
++
++    NOTE: the onboarding spec was cut off after `room_type`, so only the
++    minimum needed for capacity tracking is modelled here (name, type,
++    capacity, available capacity). Extend once the rest of the spec is known."""
++    __tablename__ = "storage_rooms"
++    __table_args__ = (UniqueConstraint("facility_id", "room_name", name="uq_storage_room_name"),)
++
++    id = Column(Integer, primary_key=True, index=True)
++    facility_id = Column(Integer, ForeignKey("storage_facilities.id"), nullable=False, index=True)
++    room_name = Column(String, nullable=False)
++    room_type = Column(String, nullable=False)  # free text until the spec defines allowed values
++    capacity_kg = Column(Float, nullable=False)
++    available_capacity_kg = Column(Float, nullable=False)
++    created_at = Column(DateTime, default=now)
++    updated_at = Column(DateTime, default=now, onupdate=now)
++
++    facility = relationship("StorageFacility", back_populates="rooms")
+ 
+ 
+ class StorageBooking(Base):
+diff --git a/backend/app/routers/auth.py b/backend/app/routers/auth.py
+index ee0ee55..d40721e 100644
+--- a/backend/app/routers/auth.py
++++ b/backend/app/routers/auth.py
+@@ -43,6 +43,15 @@ def _transporter_dict(t: models.Transporter) -> dict:
+     }
+ 
+ 
++def _storage_provider_dict(p: models.StorageProvider) -> dict:
++    return {
++        "id": p.id, "name": p.name, "email": p.email,
++        "business_name": p.business_name, "contact_phone": p.contact_phone,
++        "alternate_phone": p.alternate_phone, "preferred_language": p.preferred_language,
++        "verification_status": p.verification_status,
++    }
++
++
+ @router.post("/register/farmer", response_model=schemas.Token)
+ def register_farmer(payload: schemas.FarmerRegister, db: Session = Depends(get_db)):
+     if db.query(models.Farmer).filter(models.Farmer.email == payload.email).first():
+@@ -101,6 +110,25 @@ def register_transporter(payload: schemas.TransporterRegister, db: Session = Dep
+     return {"access_token": token, "role": "transporter", "user": _transporter_dict(transporter)}
+ 
+ 
++@router.post("/register/storage-provider", response_model=schemas.Token)
++def register_storage_provider(payload: schemas.StorageProviderRegister, db: Session = Depends(get_db)):
++    """Same pattern as the other roles: bcrypt hash + JWT with role='storage_provider'.
++    The account starts with verification_status='PENDING'."""
++    if db.query(models.StorageProvider).filter(models.StorageProvider.email == payload.email).first():
++        raise AppError(status_code=400, code="ACCOUNT_EMAIL_EXISTS", detail="An account with this email already exists")
++    provider = models.StorageProvider(
++        name=payload.name, email=payload.email,
++        password_hash=hash_password(payload.password),
++        business_name=payload.business_name, contact_phone=payload.contact_phone,
++        alternate_phone=payload.alternate_phone, preferred_language=payload.preferred_language,
++    )
++    db.add(provider)
++    db.commit()
++    db.refresh(provider)
++    token = create_access_token(subject=provider.email, role="storage_provider")
++    return {"access_token": token, "role": "storage_provider", "user": _storage_provider_dict(provider)}
++
++
+ @router.post("/login", response_model=schemas.Token)
+ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+     """
+@@ -134,6 +162,13 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
+         record_login_event(db, user_id=transporter.id, role="transporter", success=True, touch_last_login_on=transporter)
+         return response
+ 
++    provider = db.query(models.StorageProvider).filter(models.StorageProvider.email == email).first()
++    if provider and verify_password(form_data.password, provider.password_hash):
++        token = create_access_token(subject=provider.email, role="storage_provider")
++        response = {"access_token": token, "role": "storage_provider", "user": _storage_provider_dict(provider)}
++        record_login_event(db, user_id=provider.id, role="storage_provider", success=True, touch_last_login_on=provider)
++        return response
++
+     # Failed login. Identify the targeted account when possible (by numeric
+     # id + role only -- never by storing the email/username that was typed
+     # or the password) so the admin dashboard can distinguish "wrong
+@@ -145,6 +180,8 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
+         record_login_event(db, user_id=buyer.id, role="buyer", success=False)
+     elif transporter:
+         record_login_event(db, user_id=transporter.id, role="transporter", success=False)
++    elif provider:
++        record_login_event(db, user_id=provider.id, role="storage_provider", success=False)
+     else:
+         record_login_event(db, user_id=None, role="unknown", success=False)
+ 
+@@ -172,6 +209,8 @@ def me(current=Depends(get_current_user)):
+         return {"role": role, "user": _farmer_dict(user)}
+     if role == "transporter":
+         return {"role": role, "user": _transporter_dict(user)}
++    if role == "storage_provider":
++        return {"role": role, "user": _storage_provider_dict(user)}
+     if role == "admin":
+         return {"role": role, "user": user}
+     return {"role": role, "user": _buyer_dict(user)}
+diff --git a/backend/app/routers/storage.py b/backend/app/routers/storage.py
+index 0bd06a3..f73d902 100644
+--- a/backend/app/routers/storage.py
++++ b/backend/app/routers/storage.py
+@@ -81,6 +81,8 @@ def _facility_dict(f: models.StorageFacility) -> dict:
+         "warehouse_features": f.warehouse_features or [],
+         "quality_services": f.quality_services or [],
+         "contact": f.contact,
++        "operating_hours": f.operating_hours,
++        "images": f.images or [],
+         "verification_status": f.verification_status,
+         "status": f.status,
+         "is_demo": f.is_demo,
+diff --git a/backend/app/routers/storage_provider.py b/backend/app/routers/storage_provider.py
+new file mode 100644
+index 0000000..d753663
+--- /dev/null
++++ b/backend/app/routers/storage_provider.py
+@@ -0,0 +1,221 @@
++"""
++Storage partner (warehouse / cold-storage operator) endpoints: profile,
++facility management and room-level inventory. All routes are scoped to the
++authenticated provider's own facilities; another provider's facility or room
++is always reported as 404.
++
++Farmer-facing browsing and booking stay in app/routers/storage.py.
++"""
++from fastapi import APIRouter, Depends, HTTPException
++from sqlalchemy.orm import Session
++
++from app.database import get_db
++from app import models, schemas
++from app.auth_utils import require_storage_provider
++from app.routers.storage import _facility_dict
++
++router = APIRouter(prefix="/storage-provider", tags=["storage-provider"])
++
++
++# --- helpers -----------------------------------------------------------------
++
++def _own_facility_or_404(db: Session, provider: models.StorageProvider, facility_id: int) -> models.StorageFacility:
++    f = (
++        db.query(models.StorageFacility)
++        .filter(models.StorageFacility.id == facility_id, models.StorageFacility.provider_id == provider.id)
++        .first()
++    )
++    if not f:
++        raise HTTPException(status_code=404, detail="Storage facility not found")
++    return f
++
++
++def _own_room_or_404(db: Session, provider: models.StorageProvider, room_id: int) -> models.StorageRoom:
++    room = (
++        db.query(models.StorageRoom)
++        .join(models.StorageFacility, models.StorageRoom.facility_id == models.StorageFacility.id)
++        .filter(models.StorageRoom.id == room_id, models.StorageFacility.provider_id == provider.id)
++        .first()
++    )
++    if not room:
++        raise HTTPException(status_code=404, detail="Storage room not found")
++    return room
++
++
++def _facility_owner_dict(f: models.StorageFacility) -> dict:
++    d = _facility_dict(f)
++    d["rooms"] = [schemas.StorageRoomOut.model_validate(r).model_dump() for r in sorted(f.rooms, key=lambda r: r.id)]
++    return d
++
++
++def _ensure_room_name_free(db: Session, facility_id: int, room_name: str, exclude_id: int | None = None):
++    q = db.query(models.StorageRoom).filter(
++        models.StorageRoom.facility_id == facility_id, models.StorageRoom.room_name == room_name
++    )
++    if exclude_id is not None:
++        q = q.filter(models.StorageRoom.id != exclude_id)
++    if q.first():
++        raise HTTPException(status_code=409, detail="A room with this name already exists in this facility")
++
++
++# --- profile -----------------------------------------------------------------
++
++@router.get("/profile", response_model=schemas.StorageProviderOut)
++def my_profile(provider: models.StorageProvider = Depends(require_storage_provider)):
++    return provider
++
++
++@router.patch("/profile", response_model=schemas.StorageProviderOut)
++def update_profile(
++    payload: schemas.StorageProviderUpdate,
++    provider: models.StorageProvider = Depends(require_storage_provider),
++    db: Session = Depends(get_db),
++):
++    for key, value in payload.model_dump(exclude_unset=True).items():
++        # Required columns ignore an explicit null rather than writing NULL.
++        if value is None and key != "alternate_phone":
++            continue
++        setattr(provider, key, value)
++    db.commit()
++    db.refresh(provider)
++    return provider
++
++
++# --- facilities --------------------------------------------------------------
++
++@router.post("/facilities", status_code=201)
++def create_facility(
++    payload: schemas.StorageFacilityCreate,
++    provider: models.StorageProvider = Depends(require_storage_provider),
++    db: Session = Depends(get_db),
++):
++    """Lists a facility owned by this provider. It starts UNVERIFIED (an
++    existing facility verification value) and is never marked demo."""
++    facility = models.StorageFacility(
++        provider_id=provider.id,
++        available_capacity_kg=payload.capacity_kg,
++        verification_status="UNVERIFIED",
++        status="ACTIVE",
++        is_demo=False,
++        **payload.model_dump(),
++    )
++    db.add(facility)
++    db.commit()
++    db.refresh(facility)
++    return _facility_owner_dict(facility)
++
++
++@router.get("/facilities")
++def list_my_facilities(
++    provider: models.StorageProvider = Depends(require_storage_provider),
++    db: Session = Depends(get_db),
++):
++    facilities = (
++        db.query(models.StorageFacility)
++        .filter(models.StorageFacility.provider_id == provider.id)
++        .order_by(models.StorageFacility.id)
++        .all()
++    )
++    return [_facility_owner_dict(f) for f in facilities]
++
++
++@router.get("/facilities/{facility_id}")
++def get_my_facility(
++    facility_id: int,
++    provider: models.StorageProvider = Depends(require_storage_provider),
++    db: Session = Depends(get_db),
++):
++    return _facility_owner_dict(_own_facility_or_404(db, provider, facility_id))
++
++
++@router.patch("/facilities/{facility_id}")
++def update_facility(
++    facility_id: int,
++    payload: schemas.StorageFacilityUpdate,
++    provider: models.StorageProvider = Depends(require_storage_provider),
++    db: Session = Depends(get_db),
++):
++    f = _own_facility_or_404(db, provider, facility_id)
++    changes = payload.model_dump(exclude_unset=True)
++    # Columns that are NOT NULL (or have a non-null default) ignore an explicit null.
++    nullable = {"latitude", "longitude", "contact", "operating_hours"}
++    changes = {k: v for k, v in changes.items() if v is not None or k in nullable}
++    if "capacity_kg" in changes:
++        # Keep already-booked stock intact: booked = old capacity - old available.
++        booked = f.capacity_kg - f.available_capacity_kg
++        if changes["capacity_kg"] < booked:
++            raise HTTPException(
++                status_code=400,
++                detail=f"capacity_kg cannot be lower than the {booked:g} kg currently booked",
++            )
++        f.available_capacity_kg = changes["capacity_kg"] - booked
++    for key, value in changes.items():
++        setattr(f, key, value)
++    db.commit()
++    db.refresh(f)
++    return _facility_owner_dict(f)
++
++
++# --- rooms (room-level inventory) ---------------------------------------------
++
++@router.post("/facilities/{facility_id}/rooms", response_model=schemas.StorageRoomOut, status_code=201)
++def add_room(
++    facility_id: int,
++    payload: schemas.StorageRoomCreate,
++    provider: models.StorageProvider = Depends(require_storage_provider),
++    db: Session = Depends(get_db),
++):
++    _own_facility_or_404(db, provider, facility_id)
++    _ensure_room_name_free(db, facility_id, payload.room_name)
++    available = payload.capacity_kg if payload.available_capacity_kg is None else payload.available_capacity_kg
++    room = models.StorageRoom(
++        facility_id=facility_id, room_name=payload.room_name, room_type=payload.room_type,
++        capacity_kg=payload.capacity_kg, available_capacity_kg=available,
++    )
++    db.add(room)
++    db.commit()
++    db.refresh(room)
++    return room
++
++
++@router.get("/facilities/{facility_id}/rooms", response_model=list[schemas.StorageRoomOut])
++def list_rooms(
++    facility_id: int,
++    provider: models.StorageProvider = Depends(require_storage_provider),
++    db: Session = Depends(get_db),
++):
++    f = _own_facility_or_404(db, provider, facility_id)
++    return sorted(f.rooms, key=lambda r: r.id)
++
++
++@router.patch("/rooms/{room_id}", response_model=schemas.StorageRoomOut)
++def update_room(
++    room_id: int,
++    payload: schemas.StorageRoomUpdate,
++    provider: models.StorageProvider = Depends(require_storage_provider),
++    db: Session = Depends(get_db),
++):
++    room = _own_room_or_404(db, provider, room_id)
++    changes = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
++    if "room_name" in changes:
++        _ensure_room_name_free(db, room.facility_id, changes["room_name"], exclude_id=room.id)
++    capacity = changes.get("capacity_kg", room.capacity_kg)
++    available = changes.get("available_capacity_kg", room.available_capacity_kg)
++    if available > capacity:
++        raise HTTPException(status_code=422, detail="available_capacity_kg cannot exceed capacity_kg")
++    for key, value in changes.items():
++        setattr(room, key, value)
++    db.commit()
++    db.refresh(room)
++    return room
++
++
++@router.delete("/rooms/{room_id}", status_code=204)
++def delete_room(
++    room_id: int,
++    provider: models.StorageProvider = Depends(require_storage_provider),
++    db: Session = Depends(get_db),
++):
++    room = _own_room_or_404(db, provider, room_id)
++    db.delete(room)
++    db.commit()
+diff --git a/backend/app/schemas.py b/backend/app/schemas.py
+index c00b474..80307f3 100644
+--- a/backend/app/schemas.py
++++ b/backend/app/schemas.py
+@@ -582,6 +582,108 @@ class StorageFacilityOut(BaseModel):
+     created_at: dt.datetime
+ 
+ 
++class StorageProviderRegister(BaseModel):
++    name: str = Field(..., min_length=1)
++    email: EmailStr
++    password: str = Field(..., min_length=6)
++    business_name: str = Field(..., min_length=1)
++    contact_phone: str = Field(..., min_length=1)
++    alternate_phone: Optional[str] = None
++    preferred_language: str = "en"
++
++
++class StorageProviderUpdate(BaseModel):
++    """Partial profile update. Email, password and verification_status are
++    not editable here."""
++    name: Optional[str] = Field(None, min_length=1)
++    business_name: Optional[str] = Field(None, min_length=1)
++    contact_phone: Optional[str] = Field(None, min_length=1)
++    alternate_phone: Optional[str] = None
++    preferred_language: Optional[str] = None
++
++
++class StorageProviderOut(BaseModel):
++    model_config = ConfigDict(from_attributes=True)
++    id: int
++    name: str
++    email: str
++    business_name: str
++    contact_phone: str
++    alternate_phone: Optional[str]
++    preferred_language: str
++    verification_status: str
++
++
++ProviderFacilityType = Literal["WAREHOUSE", "COLD_STORAGE", "FPO_STORAGE", "PRIVATE_STORAGE"]
++
++
++class StorageFacilityCreate(BaseModel):
++    name: str = Field(..., min_length=1)
++    facility_type: ProviderFacilityType = "WAREHOUSE"
++    location: str = Field(..., min_length=1)
++    latitude: Optional[float] = None
++    longitude: Optional[float] = None
++    capacity_kg: float = Field(..., gt=0)
++    price_per_kg_per_day: float = Field(..., gt=0)
++    crop_types: List[str] = Field(default_factory=list)
++    temperature_controlled: bool = False
++    warehouse_features: List[str] = Field(default_factory=list)
++    quality_services: List[str] = Field(default_factory=list)
++    contact: Optional[str] = None
++    operating_hours: Optional[str] = None
++    images: List[str] = Field(default_factory=list)
++
++
++class StorageFacilityUpdate(BaseModel):
++    """Partial update. Setting status to INACTIVE hides the facility from the
++    marketplace without deleting it (or its bookings)."""
++    name: Optional[str] = Field(None, min_length=1)
++    facility_type: Optional[ProviderFacilityType] = None
++    location: Optional[str] = Field(None, min_length=1)
++    latitude: Optional[float] = None
++    longitude: Optional[float] = None
++    capacity_kg: Optional[float] = Field(None, gt=0)
++    price_per_kg_per_day: Optional[float] = Field(None, gt=0)
++    crop_types: Optional[List[str]] = None
++    temperature_controlled: Optional[bool] = None
++    warehouse_features: Optional[List[str]] = None
++    quality_services: Optional[List[str]] = None
++    contact: Optional[str] = None
++    operating_hours: Optional[str] = None
++    images: Optional[List[str]] = None
++    status: Optional[Literal["ACTIVE", "INACTIVE"]] = None
++
++
++class StorageRoomCreate(BaseModel):
++    room_name: str = Field(..., min_length=1)
++    room_type: str = Field(..., min_length=1)
++    capacity_kg: float = Field(..., gt=0)
++    available_capacity_kg: Optional[float] = Field(None, ge=0)  # defaults to capacity_kg
++
++    @model_validator(mode="after")
++    def _available_within_capacity(self):
++        if self.available_capacity_kg is not None and self.available_capacity_kg > self.capacity_kg:
++            raise ValueError("available_capacity_kg cannot exceed capacity_kg")
++        return self
++
++
++class StorageRoomUpdate(BaseModel):
++    room_name: Optional[str] = Field(None, min_length=1)
++    room_type: Optional[str] = Field(None, min_length=1)
++    capacity_kg: Optional[float] = Field(None, gt=0)
++    available_capacity_kg: Optional[float] = Field(None, ge=0)
++
++
++class StorageRoomOut(BaseModel):
++    model_config = ConfigDict(from_attributes=True)
++    id: int
++    facility_id: int
++    room_name: str
++    room_type: str
++    capacity_kg: float
++    available_capacity_kg: float
++
++
+ class StorageBookingCreate(BaseModel):
+     storage_facility_id: int
+     lot_id: Optional[int] = None
+diff --git a/backend/tests/test_storage_provider.py b/backend/tests/test_storage_provider.py
+new file mode 100644
+index 0000000..2b87d98
+--- /dev/null
++++ b/backend/tests/test_storage_provider.py
+@@ -0,0 +1,211 @@
++"""
++Tests for the storage partner role: registration/auth, facility management and
++room-level inventory (app/routers/storage_provider.py, app/routers/auth.py).
++
++Run: pytest backend/tests/test_storage_provider.py -v
++"""
++import os
++import sys
++
++import pytest
++from fastapi import HTTPException
++from pydantic import ValidationError
++from sqlalchemy import create_engine
++from sqlalchemy.orm import sessionmaker
++
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
++
++from app import models, schemas
++from app.database import Base
++from app.auth_utils import require_storage_provider, require_farmer, get_current_user, create_access_token
++from app.routers import auth as auth_router
++from app.routers import storage_provider as sp
++from app.routers import storage as storage_router
++
++
++@pytest.fixture()
++def db():
++    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
++    Base.metadata.create_all(bind=engine)
++    session = sessionmaker(bind=engine)()
++    yield session
++    session.close()
++
++
++def _register(db, email="p1@example.com", password="secret1"):
++    return auth_router.register_storage_provider(
++        schemas.StorageProviderRegister(
++            name="Owner", email=email, password=password,
++            business_name="Bilaspur Cold Chain", contact_phone="9000000010",
++        ),
++        db,
++    )
++
++
++def _provider(db, email="p1@example.com"):
++    _register(db, email)
++    return db.query(models.StorageProvider).filter_by(email=email).one()
++
++
++def _facility(db, provider, **over):
++    data = dict(name="Cold Store A", location="Bilaspur", capacity_kg=10000, price_per_kg_per_day=0.5)
++    data.update(over)
++    return sp.create_facility(schemas.StorageFacilityCreate(**data), provider, db)
++
++
++# ---- auth -------------------------------------------------------------------
++
++def test_register_creates_pending_provider_and_token(db):
++    resp = _register(db)
++    assert resp["role"] == "storage_provider"
++    assert resp["user"]["verification_status"] == "PENDING"
++    assert "password_hash" not in resp["user"]
++    p = db.query(models.StorageProvider).one()
++    assert p.password_hash != "secret1"
++
++
++def test_duplicate_email_rejected(db):
++    _register(db)
++    with pytest.raises(Exception) as e:
++        _register(db)
++    assert getattr(e.value, "status_code", None) == 400
++
++
++def test_login_and_me_for_storage_provider(db):
++    _register(db)
++
++    class Form:
++        username, password = "p1@example.com", "secret1"
++
++    out = auth_router.login(Form(), db)
++    assert out["role"] == "storage_provider"
++    assert auth_router.me({"user": db.query(models.StorageProvider).one(), "role": "storage_provider"})["role"] == "storage_provider"
++
++    class Bad:
++        username, password = "p1@example.com", "wrong"
++
++    with pytest.raises(Exception) as e:
++        auth_router.login(Bad(), db)
++    assert getattr(e.value, "status_code", None) == 401
++
++
++def test_token_resolves_to_provider_and_rbac(db):
++    _register(db)
++    token = create_access_token(subject="p1@example.com", role="storage_provider")
++    current = get_current_user(token=token, db=db)
++    assert current["role"] == "storage_provider"
++    assert require_storage_provider(current).email == "p1@example.com"
++    with pytest.raises(HTTPException) as e:
++        require_farmer(current)
++    assert e.value.status_code == 403
++    farmer_current = {"role": "farmer", "user": object()}
++    with pytest.raises(HTTPException) as e:
++        require_storage_provider(farmer_current)
++    assert e.value.status_code == 403
++
++
++# ---- facilities -------------------------------------------------------------
++
++def test_create_facility_defaults(db):
++    p = _provider(db)
++    d = _facility(db, p, operating_hours="6am-8pm", images=["a.jpg"])
++    assert d["available_capacity_kg"] == 10000
++    assert d["is_demo"] is False and d["verification_status"] == "UNVERIFIED" and d["status"] == "ACTIVE"
++    assert d["operating_hours"] == "6am-8pm" and d["images"] == ["a.jpg"]
++    f = db.query(models.StorageFacility).one()
++    assert f.provider_id == p.id
++
++
++def test_facility_validation():
++    with pytest.raises(ValidationError):
++        schemas.StorageFacilityCreate(name="x", location="y", capacity_kg=0, price_per_kg_per_day=1)
++    with pytest.raises(ValidationError):
++        schemas.StorageFacilityCreate(name="x", location="y", capacity_kg=1, price_per_kg_per_day=1,
++                                      facility_type="GOVERNMENT_STORAGE")
++
++
++def test_facilities_are_owner_scoped(db):
++    p1, p2 = _provider(db), _provider(db, "p2@example.com")
++    fac = _facility(db, p1)
++    assert [f["id"] for f in sp.list_my_facilities(p1, db)] == [fac["id"]]
++    assert sp.list_my_facilities(p2, db) == []
++    for call in (
++        lambda: sp.get_my_facility(fac["id"], p2, db),
++        lambda: sp.update_facility(fac["id"], schemas.StorageFacilityUpdate(name="Hijack"), p2, db),
++        lambda: sp.add_room(fac["id"], schemas.StorageRoomCreate(room_name="R", room_type="DRY", capacity_kg=1), p2, db),
++        lambda: sp.list_rooms(fac["id"], p2, db),
++    ):
++        with pytest.raises(HTTPException) as e:
++            call()
++        assert e.value.status_code == 404
++
++
++def test_update_facility_preserves_booked_stock(db):
++    p = _provider(db)
++    fac = _facility(db, p)
++    f = db.query(models.StorageFacility).one()
++    f.available_capacity_kg = 7000  # 3000 kg already booked
++    db.commit()
++    out = sp.update_facility(fac["id"], schemas.StorageFacilityUpdate(capacity_kg=12000), p, db)
++    assert out["capacity_kg"] == 12000 and out["available_capacity_kg"] == 9000
++    with pytest.raises(HTTPException) as e:
++        sp.update_facility(fac["id"], schemas.StorageFacilityUpdate(capacity_kg=2000), p, db)
++    assert e.value.status_code == 400
++
++
++def test_inactive_facility_hidden_from_marketplace(db):
++    p = _provider(db)
++    fac = _facility(db, p)
++    assert len(storage_router.list_facilities(None, None, None, db)) == 1
++    sp.update_facility(fac["id"], schemas.StorageFacilityUpdate(status="INACTIVE"), p, db)
++    assert storage_router.list_facilities(None, None, None, db) == []
++
++
++# ---- rooms ------------------------------------------------------------------
++
++def test_room_crud_and_capacity_rules(db):
++    p = _provider(db)
++    fac = _facility(db, p)
++    room = sp.add_room(fac["id"], schemas.StorageRoomCreate(room_name="Room 1", room_type="COLD", capacity_kg=2000), p, db)
++    assert room.available_capacity_kg == 2000
++    assert [r.id for r in sp.list_rooms(fac["id"], p, db)] == [room.id]
++
++    out = sp.update_room(room.id, schemas.StorageRoomUpdate(available_capacity_kg=1500), p, db)
++    assert out.available_capacity_kg == 1500
++    with pytest.raises(HTTPException) as e:
++        sp.update_room(room.id, schemas.StorageRoomUpdate(capacity_kg=1000), p, db)  # 1500 avail > 1000
++    assert e.value.status_code == 422
++
++    sp.delete_room(room.id, p, db)
++    assert sp.list_rooms(fac["id"], p, db) == []
++
++
++def test_room_validation_and_unique_name(db):
++    with pytest.raises(ValidationError):
++        schemas.StorageRoomCreate(room_name="R", room_type="DRY", capacity_kg=100, available_capacity_kg=200)
++    p = _provider(db)
++    fac = _facility(db, p)
++    sp.add_room(fac["id"], schemas.StorageRoomCreate(room_name="Room 1", room_type="DRY", capacity_kg=100), p, db)
++    with pytest.raises(HTTPException) as e:
++        sp.add_room(fac["id"], schemas.StorageRoomCreate(room_name="Room 1", room_type="COLD", capacity_kg=50), p, db)
++    assert e.value.status_code == 409
++
++
++def test_room_ops_blocked_across_providers(db):
++    p1, p2 = _provider(db), _provider(db, "p2@example.com")
++    fac = _facility(db, p1)
++    room = sp.add_room(fac["id"], schemas.StorageRoomCreate(room_name="Room 1", room_type="DRY", capacity_kg=100), p1, db)
++    for call in (
++        lambda: sp.update_room(room.id, schemas.StorageRoomUpdate(room_name="X"), p2, db),
++        lambda: sp.delete_room(room.id, p2, db),
++    ):
++        with pytest.raises(HTTPException) as e:
++            call()
++        assert e.value.status_code == 404
++
++
++def test_profile_update(db):
++    p = _provider(db)
++    out = sp.update_profile(schemas.StorageProviderUpdate(business_name="New Name", alternate_phone="9111111111"), p, db)
++    assert out.business_name == "New Name" and out.alternate_phone == "9111111111"
++    assert out.verification_status == "PENDING"

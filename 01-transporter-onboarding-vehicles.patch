@@ -1,0 +1,563 @@
+diff --git a/backend/app/database.py b/backend/app/database.py
+index 1e1533b..6e5a856 100644
+--- a/backend/app/database.py
++++ b/backend/app/database.py
+@@ -139,6 +139,16 @@ def run_lightweight_migrations():
+             add_column_if_missing("buyer_offers", "agreed_price_per_kg", "FLOAT")
+             add_column_if_missing("buyer_offers", "agreed_quantity_kg", "FLOAT")
+             add_column_if_missing("buyer_offers", "agreed_at", "DATETIME")
++
++            # Transporter partner onboarding (transporter_vehicles is a new
++            # table, created by create_all()).
++            add_column_if_missing("transporters", "primary_phone", "VARCHAR")
++            add_column_if_missing("transporters", "whatsapp_number", "VARCHAR")
++            add_column_if_missing("transporters", "operating_district", "VARCHAR")
++            add_column_if_missing("transporters", "operating_state", "VARCHAR")
++            add_column_if_missing("transporters", "service_routes", "JSON")
++            add_column_if_missing("transporters", "verification_status", "VARCHAR NOT NULL DEFAULT 'PENDING'")
++            add_column_if_missing("transporters", "verification_documents", "JSON")
+         return
+ 
+     # Postgres path: only the columns added after the Supabase migration.
+@@ -226,4 +236,14 @@ def run_lightweight_migrations():
+         conn.execute(text("ALTER TABLE buyer_offers ADD COLUMN IF NOT EXISTS agreed_price_per_kg DOUBLE PRECISION"))
+         conn.execute(text("ALTER TABLE buyer_offers ADD COLUMN IF NOT EXISTS agreed_quantity_kg DOUBLE PRECISION"))
+         conn.execute(text("ALTER TABLE buyer_offers ADD COLUMN IF NOT EXISTS agreed_at TIMESTAMP"))
++        # Transporter partner onboarding columns (transporter_vehicles is created by create_all).
++        conn.execute(text("ALTER TABLE transporters ADD COLUMN IF NOT EXISTS primary_phone VARCHAR"))
++        conn.execute(text("ALTER TABLE transporters ADD COLUMN IF NOT EXISTS whatsapp_number VARCHAR"))
++        conn.execute(text("ALTER TABLE transporters ADD COLUMN IF NOT EXISTS operating_district VARCHAR"))
++        conn.execute(text("ALTER TABLE transporters ADD COLUMN IF NOT EXISTS operating_state VARCHAR"))
++        conn.execute(text("ALTER TABLE transporters ADD COLUMN IF NOT EXISTS service_routes JSON"))
++        conn.execute(text(
++            "ALTER TABLE transporters ADD COLUMN IF NOT EXISTS verification_status VARCHAR NOT NULL DEFAULT 'PENDING'"
++        ))
++        conn.execute(text("ALTER TABLE transporters ADD COLUMN IF NOT EXISTS verification_documents JSON"))
+         conn.commit()
+diff --git a/backend/app/models.py b/backend/app/models.py
+index fd54ca2..4e1bff2 100644
+--- a/backend/app/models.py
++++ b/backend/app/models.py
+@@ -591,7 +591,58 @@ class Transporter(Base):
+     created_at = Column(DateTime, default=now)
+     last_login = Column(DateTime, nullable=True)
+ 
++    # Partner onboarding extensions. All nullable at the DB level so rows
++    # created before onboarding existed stay valid; the "required" rules from
++    # the onboarding spec are enforced by schemas.TransporterOnboarding.
++    primary_phone = Column(String, nullable=True)
++    whatsapp_number = Column(String, nullable=True)
++    operating_district = Column(String, nullable=True)
++    operating_state = Column(String, nullable=True)
++    service_routes = Column(JSON, default=list)
++    # PENDING / VERIFIED / REJECTED
++    verification_status = Column(String, nullable=False, default="PENDING")
++    verification_documents = Column(JSON, default=list)
++
+     assigned_requests = relationship("TransportRequest", back_populates="transporter")
++    vehicles = relationship(
++        "TransporterVehicle", back_populates="transporter", cascade="all, delete-orphan"
++    )
++
++
++class TransporterVehicle(Base):
++    """A vehicle a transporter lists for hire / FarmPool matching.
++
++    `registration_number` is PRIVATE: it is only ever returned to the owning
++    transporter (see schemas.TransporterVehicleOut) and is never part of any
++    farmer-/public-facing payload."""
++    __tablename__ = "transporter_vehicles"
++
++    id = Column(Integer, primary_key=True, index=True)
++    transporter_id = Column(Integer, ForeignKey("transporters.id"), nullable=False, index=True)
++    vehicle_name = Column(String, nullable=False)
++    registration_number = Column(String, nullable=False, unique=True)  # stored upper-case, private
++    # MINI_TRUCK / TRUCK / REFRIGERATED / TRACTOR
++    category = Column(String, nullable=False)
++    max_capacity_kg = Column(Float, nullable=False)
++    available_capacity_kg = Column(Float, nullable=False)
++    # OPEN / COVERED
++    body_type = Column(String, nullable=False)
++    driver_name = Column(String, nullable=True)
++    driver_contact = Column(String, nullable=True)
++    rate_per_km = Column(Float, nullable=True)
++    rate_per_trip = Column(Float, nullable=True)
++    is_available = Column(Boolean, nullable=False, default=True)
++    accepts_farmpool = Column(Boolean, nullable=False, default=True)
++    max_detour_km = Column(Float, nullable=False, default=10.0)
++    max_additional_stops = Column(Integer, nullable=False, default=2)
++    # {"origin": str, "destination": str, "available_date": "YYYY-MM-DD"} or None
++    empty_return_route = Column(JSON, nullable=True)
++    # subset of LOADING_ASSISTANCE / LABOUR / REFRIGERATED / GPS / INSURED
++    features = Column(JSON, default=list)
++    created_at = Column(DateTime, default=now)
++    updated_at = Column(DateTime, default=now, onupdate=now)
++
++    transporter = relationship("Transporter", back_populates="vehicles")
+ 
+ 
+ class TransportOffer(Base):
+diff --git a/backend/app/routers/auth.py b/backend/app/routers/auth.py
+index bf9971d..ee0ee55 100644
+--- a/backend/app/routers/auth.py
++++ b/backend/app/routers/auth.py
+@@ -36,6 +36,10 @@ def _transporter_dict(t: models.Transporter) -> dict:
+         "business_name": t.business_name, "service_area": t.service_area,
+         "vehicle_types": t.vehicle_types, "preferred_language": t.preferred_language,
+         "rating": t.rating, "rating_count": t.rating_count,
++        "primary_phone": t.primary_phone, "whatsapp_number": t.whatsapp_number,
++        "operating_district": t.operating_district, "operating_state": t.operating_state,
++        "service_routes": t.service_routes or [],
++        "verification_status": t.verification_status,
+     }
+ 
+ 
+diff --git a/backend/app/routers/transporters.py b/backend/app/routers/transporters.py
+index 4916a58..0491a15 100644
+--- a/backend/app/routers/transporters.py
++++ b/backend/app/routers/transporters.py
+@@ -75,6 +75,140 @@ def update_profile(
+     return transporter
+ 
+ 
++@router.put("/onboarding", response_model=schemas.TransporterOut)
++def complete_onboarding(
++    payload: schemas.TransporterOnboarding,
++    transporter: models.Transporter = Depends(require_transporter),
++    db: Session = Depends(get_db),
++):
++    """Partner onboarding: fills in business / coverage details on the
++    authenticated transporter's own account. verification_status is never
++    taken from the client -- it stays PENDING until reviewed. Changing the
++    submitted documents on an already-verified/rejected account sends it back
++    to PENDING for re-review."""
++    transporter.business_name = payload.business_name
++    transporter.primary_phone = payload.primary_phone
++    transporter.phone = payload.primary_phone  # keep the legacy phone field in step
++    transporter.whatsapp_number = payload.whatsapp_number
++    transporter.operating_district = payload.operating_district
++    transporter.operating_state = payload.operating_state
++    transporter.service_routes = payload.service_routes
++    transporter.preferred_language = payload.preferred_language
++    if list(transporter.verification_documents or []) != payload.verification_documents:
++        transporter.verification_documents = payload.verification_documents
++        transporter.verification_status = "PENDING"
++    db.commit()
++    db.refresh(transporter)
++    return transporter
++
++
++# --- vehicles (owner-only; registration_number is private) -------------------
++
++def _normalize_reg(value: str) -> str:
++    return "".join(value.split()).upper()
++
++
++def _own_vehicle_or_404(db: Session, transporter: models.Transporter, vehicle_id: int) -> models.TransporterVehicle:
++    v = (
++        db.query(models.TransporterVehicle)
++        .filter(
++            models.TransporterVehicle.id == vehicle_id,
++            models.TransporterVehicle.transporter_id == transporter.id,
++        )
++        .first()
++    )
++    if not v:
++        raise HTTPException(status_code=404, detail="Vehicle not found")
++    return v
++
++
++def _ensure_reg_unique(db: Session, reg: str, exclude_id: int | None = None):
++    q = db.query(models.TransporterVehicle).filter(models.TransporterVehicle.registration_number == reg)
++    if exclude_id is not None:
++        q = q.filter(models.TransporterVehicle.id != exclude_id)
++    if q.first():
++        raise HTTPException(status_code=409, detail="A vehicle with this registration number is already registered")
++
++
++@router.post("/vehicles", response_model=schemas.TransporterVehicleOut, status_code=201)
++def add_vehicle(
++    payload: schemas.TransporterVehicleCreate,
++    transporter: models.Transporter = Depends(require_transporter),
++    db: Session = Depends(get_db),
++):
++    data = payload.model_dump(mode="json")
++    data["registration_number"] = _normalize_reg(payload.registration_number)
++    _ensure_reg_unique(db, data["registration_number"])
++    vehicle = models.TransporterVehicle(transporter_id=transporter.id, **data)
++    db.add(vehicle)
++    db.commit()
++    db.refresh(vehicle)
++    return vehicle
++
++
++@router.get("/vehicles", response_model=list[schemas.TransporterVehicleOut])
++def list_my_vehicles(
++    transporter: models.Transporter = Depends(require_transporter),
++    db: Session = Depends(get_db),
++):
++    return (
++        db.query(models.TransporterVehicle)
++        .filter(models.TransporterVehicle.transporter_id == transporter.id)
++        .order_by(models.TransporterVehicle.id)
++        .all()
++    )
++
++
++@router.get("/vehicles/{vehicle_id}", response_model=schemas.TransporterVehicleOut)
++def get_my_vehicle(
++    vehicle_id: int,
++    transporter: models.Transporter = Depends(require_transporter),
++    db: Session = Depends(get_db),
++):
++    return _own_vehicle_or_404(db, transporter, vehicle_id)
++
++
++@router.patch("/vehicles/{vehicle_id}", response_model=schemas.TransporterVehicleOut)
++def update_vehicle(
++    vehicle_id: int,
++    payload: schemas.TransporterVehicleUpdate,
++    transporter: models.Transporter = Depends(require_transporter),
++    db: Session = Depends(get_db),
++):
++    vehicle = _own_vehicle_or_404(db, transporter, vehicle_id)
++    changes = payload.model_dump(mode="json", exclude_unset=True)
++    if "registration_number" in changes:
++        changes["registration_number"] = _normalize_reg(changes["registration_number"])
++        _ensure_reg_unique(db, changes["registration_number"], exclude_id=vehicle.id)
++    # Non-nullable columns: a client sending null for them is ignored rather
++    # than writing NULL.
++    for non_null in ("vehicle_name", "registration_number", "category", "max_capacity_kg",
++                     "available_capacity_kg", "body_type", "is_available", "accepts_farmpool",
++                     "max_detour_km", "max_additional_stops"):
++        if non_null in changes and changes[non_null] is None:
++            del changes[non_null]
++    max_cap = changes.get("max_capacity_kg", vehicle.max_capacity_kg)
++    avail = changes.get("available_capacity_kg", vehicle.available_capacity_kg)
++    if avail > max_cap:
++        raise HTTPException(status_code=422, detail="available_capacity_kg cannot exceed max_capacity_kg")
++    for key, value in changes.items():
++        setattr(vehicle, key, value)
++    db.commit()
++    db.refresh(vehicle)
++    return vehicle
++
++
++@router.delete("/vehicles/{vehicle_id}", status_code=204)
++def delete_vehicle(
++    vehicle_id: int,
++    transporter: models.Transporter = Depends(require_transporter),
++    db: Session = Depends(get_db),
++):
++    vehicle = _own_vehicle_or_404(db, transporter, vehicle_id)
++    db.delete(vehicle)
++    db.commit()
++
++
+ @router.get("/requests/available")
+ def available_requests(
+     transporter: models.Transporter = Depends(require_transporter),
+diff --git a/backend/app/schemas.py b/backend/app/schemas.py
+index 0517b0b..c00b474 100644
+--- a/backend/app/schemas.py
++++ b/backend/app/schemas.py
+@@ -1,7 +1,7 @@
+ import datetime as dt
+-from typing import Optional, List, Any
++from typing import Optional, List, Any, Literal
+ 
+-from pydantic import BaseModel, EmailStr, ConfigDict, Field
++from pydantic import BaseModel, EmailStr, ConfigDict, Field, model_validator
+ 
+ 
+ # ---------- Auth ----------
+@@ -664,6 +664,110 @@ class TransporterOut(BaseModel):
+     preferred_language: str
+     rating: float
+     rating_count: int
++    # Onboarding fields -- Optional because transporters created before the
++    # onboarding module have NULLs here until they complete onboarding.
++    primary_phone: Optional[str] = None
++    whatsapp_number: Optional[str] = None
++    operating_district: Optional[str] = None
++    operating_state: Optional[str] = None
++    service_routes: Optional[List[str]] = None
++    verification_status: str = "PENDING"
++    verification_documents: Optional[List[str]] = None
++
++
++VerificationStatus = Literal["PENDING", "VERIFIED", "REJECTED"]
++VehicleCategory = Literal["MINI_TRUCK", "TRUCK", "REFRIGERATED", "TRACTOR"]
++VehicleBodyType = Literal["OPEN", "COVERED"]
++VehicleFeature = Literal["LOADING_ASSISTANCE", "LABOUR", "REFRIGERATED", "GPS", "INSURED"]
++
++
++class TransporterOnboarding(BaseModel):
++    """Onboarding / profile completion for an existing transporter account.
++    `verification_status` is deliberately NOT accepted here -- a transporter
++    cannot verify themselves."""
++    business_name: str = Field(..., min_length=1)
++    primary_phone: str = Field(..., min_length=1)
++    whatsapp_number: Optional[str] = None
++    operating_district: str = Field(..., min_length=1)
++    operating_state: str = Field(..., min_length=1)
++    service_routes: List[str] = Field(..., min_length=1)
++    preferred_language: str = "hi"
++    verification_documents: List[str] = Field(default_factory=list)
++
++
++class EmptyReturnRoute(BaseModel):
++    origin: str = Field(..., min_length=1)
++    destination: str = Field(..., min_length=1)
++    available_date: dt.date
++
++
++class TransporterVehicleCreate(BaseModel):
++    vehicle_name: str = Field(..., min_length=1)
++    registration_number: str = Field(..., min_length=1)
++    category: VehicleCategory
++    max_capacity_kg: float = Field(..., gt=0)
++    available_capacity_kg: float = Field(..., ge=0)
++    body_type: VehicleBodyType
++    driver_name: Optional[str] = None
++    driver_contact: Optional[str] = None
++    rate_per_km: Optional[float] = Field(None, ge=0)
++    rate_per_trip: Optional[float] = Field(None, ge=0)
++    is_available: bool = True
++    accepts_farmpool: bool = True
++    max_detour_km: float = Field(10.0, ge=0)
++    max_additional_stops: int = Field(2, ge=0)
++    empty_return_route: Optional[EmptyReturnRoute] = None
++    features: List[VehicleFeature] = Field(default_factory=list)
++
++    @model_validator(mode="after")
++    def _available_within_max(self):
++        if self.available_capacity_kg > self.max_capacity_kg:
++            raise ValueError("available_capacity_kg cannot exceed max_capacity_kg")
++        return self
++
++
++class TransporterVehicleUpdate(BaseModel):
++    """Partial update: only fields that are sent are changed."""
++    vehicle_name: Optional[str] = Field(None, min_length=1)
++    registration_number: Optional[str] = Field(None, min_length=1)
++    category: Optional[VehicleCategory] = None
++    max_capacity_kg: Optional[float] = Field(None, gt=0)
++    available_capacity_kg: Optional[float] = Field(None, ge=0)
++    body_type: Optional[VehicleBodyType] = None
++    driver_name: Optional[str] = None
++    driver_contact: Optional[str] = None
++    rate_per_km: Optional[float] = Field(None, ge=0)
++    rate_per_trip: Optional[float] = Field(None, ge=0)
++    is_available: Optional[bool] = None
++    accepts_farmpool: Optional[bool] = None
++    max_detour_km: Optional[float] = Field(None, ge=0)
++    max_additional_stops: Optional[int] = Field(None, ge=0)
++    empty_return_route: Optional[EmptyReturnRoute] = None
++    features: Optional[List[VehicleFeature]] = None
++
++
++class TransporterVehicleOut(BaseModel):
++    """Owner-only view (includes the private registration_number). Never
++    return this to anyone but the owning transporter."""
++    model_config = ConfigDict(from_attributes=True)
++    id: int
++    transporter_id: int
++    vehicle_name: str
++    registration_number: str
++    category: str
++    max_capacity_kg: float
++    available_capacity_kg: float
++    body_type: str
++    driver_name: Optional[str]
++    driver_contact: Optional[str]
++    rate_per_km: Optional[float]
++    rate_per_trip: Optional[float]
++    is_available: bool
++    accepts_farmpool: bool
++    max_detour_km: float
++    max_additional_stops: int
++    empty_return_route: Optional[dict]
++    features: Optional[List[str]]
+ 
+ 
+ class TransportOfferCreate(BaseModel):
+diff --git a/backend/tests/test_transporter_onboarding.py b/backend/tests/test_transporter_onboarding.py
+new file mode 100644
+index 0000000..d80e167
+--- /dev/null
++++ b/backend/tests/test_transporter_onboarding.py
+@@ -0,0 +1,173 @@
++"""
++Tests for transporter partner onboarding + vehicle management
++(app/routers/transporters.py: PUT /transporter/onboarding, /transporter/vehicles).
++
++Run: pytest backend/tests/test_transporter_onboarding.py -v
++"""
++import os
++import sys
++
++import pytest
++from fastapi import HTTPException
++from pydantic import ValidationError
++from sqlalchemy import create_engine
++from sqlalchemy.orm import sessionmaker
++
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
++
++from app import models, schemas
++from app.database import Base
++from app.routers import transporters as tr
++
++
++@pytest.fixture()
++def db():
++    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
++    Base.metadata.create_all(bind=engine)
++    session = sessionmaker(bind=engine)()
++    yield session
++    session.close()
++
++
++def _transporter(db, email="t1@example.com"):
++    t = models.Transporter(name="T", email=email, password_hash="x")
++    db.add(t)
++    db.commit()
++    db.refresh(t)
++    return t
++
++
++def _onboarding(**over):
++    data = dict(
++        business_name="Chhattisgarh Carriers", primary_phone="9000000001",
++        operating_district="Bilaspur", operating_state="Chhattisgarh",
++        service_routes=["Bilaspur-Raipur"],
++    )
++    data.update(over)
++    return schemas.TransporterOnboarding(**data)
++
++
++def _vehicle(**over):
++    data = dict(
++        vehicle_name="Tata Ace", registration_number="cg 10 ab 1234", category="MINI_TRUCK",
++        max_capacity_kg=1000, available_capacity_kg=800, body_type="COVERED",
++    )
++    data.update(over)
++    return schemas.TransporterVehicleCreate(**data)
++
++
++# ---- onboarding -------------------------------------------------------------
++
++def test_onboarding_sets_fields_and_stays_pending(db):
++    t = _transporter(db)
++    out = tr.complete_onboarding(_onboarding(whatsapp_number="9000000002"), t, db)
++    assert out.business_name == "Chhattisgarh Carriers"
++    assert out.primary_phone == "9000000001" and out.phone == "9000000001"
++    assert out.whatsapp_number == "9000000002"
++    assert out.service_routes == ["Bilaspur-Raipur"]
++    assert out.preferred_language == "hi"
++    assert out.verification_status == "PENDING"
++
++
++def test_onboarding_required_fields_enforced():
++    for missing in ("business_name", "primary_phone", "operating_district", "operating_state"):
++        with pytest.raises(ValidationError):
++            _onboarding(**{missing: ""})
++    with pytest.raises(ValidationError):
++        _onboarding(service_routes=[])
++
++
++def test_onboarding_cannot_self_verify(db):
++    t = _transporter(db)
++    payload = schemas.TransporterOnboarding(
++        **_onboarding().model_dump(), **{"verification_status": "VERIFIED"}
++    )  # extra key is ignored by the schema
++    out = tr.complete_onboarding(payload, t, db)
++    assert out.verification_status == "PENDING"
++
++
++def test_changing_documents_resets_verification(db):
++    t = _transporter(db)
++    tr.complete_onboarding(_onboarding(verification_documents=["doc-a"]), t, db)
++    t.verification_status = "VERIFIED"
++    db.commit()
++    tr.complete_onboarding(_onboarding(verification_documents=["doc-a"]), t, db)
++    assert t.verification_status == "VERIFIED"  # unchanged docs keep status
++    tr.complete_onboarding(_onboarding(verification_documents=["doc-b"]), t, db)
++    assert t.verification_status == "PENDING"
++
++
++# ---- vehicles ---------------------------------------------------------------
++
++def test_add_vehicle_defaults_and_normalised_registration(db):
++    t = _transporter(db)
++    v = tr.add_vehicle(_vehicle(), t, db)
++    assert v.registration_number == "CG10AB1234"
++    assert v.is_available is True and v.accepts_farmpool is True
++    assert v.max_detour_km == 10.0 and v.max_additional_stops == 2
++
++
++def test_vehicle_validation():
++    with pytest.raises(ValidationError):
++        _vehicle(category="BIKE")
++    with pytest.raises(ValidationError):
++        _vehicle(available_capacity_kg=2000)  # > max
++    with pytest.raises(ValidationError):
++        _vehicle(features=["WIFI"])
++    with pytest.raises(ValidationError):
++        _vehicle(max_capacity_kg=0)
++
++
++def test_duplicate_registration_rejected_across_transporters(db):
++    t1, t2 = _transporter(db), _transporter(db, "t2@example.com")
++    tr.add_vehicle(_vehicle(), t1, db)
++    with pytest.raises(HTTPException) as e:
++        tr.add_vehicle(_vehicle(registration_number="CG10AB1234"), t2, db)
++    assert e.value.status_code == 409
++
++
++def test_empty_return_route_round_trips(db):
++    t = _transporter(db)
++    v = tr.add_vehicle(
++        _vehicle(empty_return_route={"origin": "Raipur", "destination": "Bilaspur", "available_date": "2026-12-01"}),
++        t, db,
++    )
++    assert v.empty_return_route == {"origin": "Raipur", "destination": "Bilaspur", "available_date": "2026-12-01"}
++
++
++def test_vehicles_are_owner_scoped(db):
++    t1, t2 = _transporter(db), _transporter(db, "t2@example.com")
++    v = tr.add_vehicle(_vehicle(), t1, db)
++    assert [x.id for x in tr.list_my_vehicles(t1, db)] == [v.id]
++    assert tr.list_my_vehicles(t2, db) == []
++    for call in (
++        lambda: tr.get_my_vehicle(v.id, t2, db),
++        lambda: tr.update_vehicle(v.id, schemas.TransporterVehicleUpdate(is_available=False), t2, db),
++        lambda: tr.delete_vehicle(v.id, t2, db),
++    ):
++        with pytest.raises(HTTPException) as e:
++            call()
++        assert e.value.status_code == 404
++
++
++def test_partial_update_and_capacity_guard(db):
++    t = _transporter(db)
++    v = tr.add_vehicle(_vehicle(), t, db)
++    out = tr.update_vehicle(v.id, schemas.TransporterVehicleUpdate(is_available=False, rate_per_km=12.5), t, db)
++    assert out.is_available is False and out.rate_per_km == 12.5 and out.vehicle_name == "Tata Ace"
++    with pytest.raises(HTTPException) as e:
++        tr.update_vehicle(v.id, schemas.TransporterVehicleUpdate(max_capacity_kg=500), t, db)  # avail 800 > 500
++    assert e.value.status_code == 422
++
++
++def test_delete_vehicle(db):
++    t = _transporter(db)
++    v = tr.add_vehicle(_vehicle(), t, db)
++    tr.delete_vehicle(v.id, t, db)
++    assert tr.list_my_vehicles(t, db) == []
++
++
++def test_registration_number_not_in_profile_payloads(db):
++    t = _transporter(db)
++    tr.add_vehicle(_vehicle(), t, db)
++    assert "registration_number" not in schemas.TransporterOut.model_fields
